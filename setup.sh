@@ -149,7 +149,9 @@ step_user() {
 
   # Password — this posture requires a password for sudo, so the user needs one.
   # Idempotent: only set if the account has no usable password yet (status != P).
-  local pwstatus; pwstatus="$(passwd -S "$TARGET_USER" 2>/dev/null | awk '{print $2}')"
+  # `|| true`: under CHECK=1 the user may not exist yet (we didn't create it),
+  # so passwd -S fails — don't let set -e abort the dry run.
+  local pwstatus=""; pwstatus="$(passwd -S "$TARGET_USER" 2>/dev/null | awk '{print $2}')" || true
   if [[ "$pwstatus" == "P" ]]; then
     ok "'$TARGET_USER' already has a password set"
   elif [[ "$CHECK" == "1" ]]; then
@@ -174,7 +176,7 @@ Set SUDO_PASSWORD in config.env (it's git-ignored) and re-run."
 
   # Authorized keys
   local home akf
-  home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+  home="$(getent passwd "$TARGET_USER" | cut -d: -f6)" || true
   akf="$home/.ssh/authorized_keys"
   local keys; keys="$(printf '%s\n' "$SSH_AUTHORIZED_KEYS" | sed '/^[[:space:]]*$/d')"
   if [[ -n "$keys" ]]; then
@@ -199,7 +201,7 @@ the 'ssh' step will refuse to disable password auth to avoid lockout."
   # SSH root login is already disabled separately (PermitRootLogin no).
   if [[ "$LOCK_ROOT_PASSWORD" == "true" ]]; then
     if has_ssh_key; then
-      local rootpw; rootpw="$(passwd -S root 2>/dev/null | awk '{print $2}')"
+      local rootpw=""; rootpw="$(passwd -S root 2>/dev/null | awk '{print $2}')" || true
       if [[ "$rootpw" == "L" ]]; then
         ok "root password already locked"
       else
@@ -266,7 +268,7 @@ step_ssh() {
   apt_install openssh-server
 
   # Anti-lockout: never disable password auth if TARGET_USER has no key.
-  local home akf; home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"; akf="$home/.ssh/authorized_keys"
+  local home akf; home="$(getent passwd "$TARGET_USER" | cut -d: -f6)" || true; akf="$home/.ssh/authorized_keys"
   if [[ ! -s "$akf" ]] && [[ -z "$(printf '%s' "$SSH_AUTHORIZED_KEYS" | tr -d '[:space:]')" ]]; then
     die "Refusing to harden SSH: '$TARGET_USER' has no authorized_keys. \
 Set SSH_AUTHORIZED_KEYS and re-run the 'user' step first."
@@ -293,30 +295,34 @@ ClientAliveCountMax 2"
   write_file "$conf" "$content" 0644 || true
 
   if [[ "$CHECK" == "1" ]]; then
-    would "sshd -t; fix ssh.socket if active; reload/restart ssh; assert listening on ${SSH_PORT}"
+    would "sshd -t; disable ssh.socket if active; enable+restart standalone sshd; assert listening on ${SSH_PORT}"
     return
   fi
   sshd -t || die "sshd config test failed — NOT reloading (existing sshd untouched)."
 
-  # On socket-activated systems (some 24.04 setups), the sshd_config Port is
-  # IGNORED — ssh.socket owns the listening port. Override the socket too.
+  # Ubuntu 24.04 ships sshd SOCKET-ACTIVATED: ssh.socket owns the listening port
+  # and the sshd_config 'Port' is ignored. Overriding the socket while also
+  # restarting ssh.service standalone makes the two fight over the port and can
+  # wedge into a NO-LISTENER state (locking you out). The robust fix is to drop
+  # socket activation entirely and run ssh.service standalone, which honors our
+  # 'Port $SSH_PORT' directive.
   if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
-    warn "ssh.socket is active — Port directive alone is ignored; overriding the socket."
-    install -D -m 0644 /dev/null /etc/systemd/system/ssh.socket.d/override.conf
-    printf '[Socket]\nListenStream=\nListenStream=%s\n' "$SSH_PORT" \
-      > /etc/systemd/system/ssh.socket.d/override.conf
+    warn "ssh.socket (socket activation) detected — disabling it; running sshd standalone on ${SSH_PORT}."
+    rm -f /etc/systemd/system/ssh.socket.d/override.conf            # clean any stale override
+    rmdir /etc/systemd/system/ssh.socket.d 2>/dev/null || true
+    systemctl disable --now ssh.socket
     systemctl daemon-reload
-    systemctl restart ssh.socket
   fi
-  systemctl reload ssh 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
+  # Standalone sshd honoring sshd_config; enable so it survives reboot.
+  systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null || true
+  systemctl restart ssh 2>/dev/null || systemctl restart sshd
 
   # Assert sshd is actually listening on the new port BEFORE the firewall seals
   # the box — a silent wrong-port bind would otherwise look like success.
   if ! ss -tlnH "( sport = :$SSH_PORT )" 2>/dev/null | grep -q . ; then
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
     sleep 1
     ss -tlnH "( sport = :$SSH_PORT )" 2>/dev/null | grep -q . \
-      || die "sshd is NOT listening on port ${SSH_PORT} after reload — aborting before the firewall seals the box. Check 'journalctl -u ssh'."
+      || die "sshd is NOT listening on port ${SSH_PORT} after restart — aborting before the firewall seals the box. Check 'journalctl -u ssh'."
   fi
   ok "sshd hardened and listening on port $SSH_PORT"
 
@@ -485,8 +491,16 @@ step_firewall() {
        || [[ "$sess_src" == fd7a:115c:a1e0:* ]]; then on_tailscale=1; else on_tailscale=0; fi
   fi
   if [[ "$ALLOW_PUBLIC_SSH" != "true" ]]; then
-    [[ "$ts_state" == "Running" ]] || die "Refusing to seal firewall: Tailscale is not Running \
+    if [[ "$ts_state" != "Running" ]]; then
+      # Under CHECK this is a dry run with no mutation — warn and continue so the
+      # rest of the plan is visible; on a real run it's a hard anti-lockout gate.
+      if [[ "$CHECK" == "1" ]]; then
+        warn "would refuse to seal: Tailscale not Running (state='${ts_state:-none}'). [dry-run continues]"
+      else
+        die "Refusing to seal firewall: Tailscale is not Running \
 (state='${ts_state:-none}'). Bring it up (run the 'tailscale' step) or set ALLOW_PUBLIC_SSH=true."
+      fi
+    fi
     if [[ "$on_tailscale" == "0" ]]; then
       warn "You appear to be connected over a NON-Tailscale address ($sess_src). Sealing the \
 firewall will drop this session. Reconnect over Tailscale first, or set ALLOW_PUBLIC_SSH=true."
@@ -544,7 +558,9 @@ main() {
     "$fn"
   done
   log "done."
-  [[ "$ALLOW_PUBLIC_SSH" != "true" ]] && command -v tailscale &>/dev/null && \
+  # Convenience hint only — must not influence the script's exit status.
+  if [[ "$ALLOW_PUBLIC_SSH" != "true" ]] && command -v tailscale &>/dev/null; then
     echo "Reach this box at: ssh -p ${SSH_PORT} ${TARGET_USER}@$(tailscale ip -4 2>/dev/null | head -1)"
+  fi
 }
 main "$@"
