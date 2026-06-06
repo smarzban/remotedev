@@ -50,12 +50,14 @@ no open ports. Reachable only over Tailscale.
 - **`verify.sh` has no `pipefail`** on purpose: `cmd | grep -q` makes the producer catch SIGPIPE (exit 141); with `pipefail` that became a flaky false FAIL. `grep`'s own exit status is the truth.
 - **`fs.protected_regular=2`** (set by `step_sysctl`) blocks root from writing a user-owned file in sticky `/tmp`. So installers run **as the target user** via the upstream pipe form (no cross-owned temp file), and Homebrew's prefix `/home/linuxbrew` is pre-created owned by the user so its non-interactive installer needn't password-sudo.
 - **`tooling.sh` reboot gate:** if `upgrade` pulls a new kernel and later steps remain, it stops → reboot → re-run continues (idempotent). Keeps the dist-upgrade/reboot dance out of `setup.sh`.
+- **Running steps over SSH (proven on a 2nd box):** `sudo` over `ssh` needs a TTY — use `ssh -t` or you get *"sudo: a terminal is required"*. Scripts copied as root sit in `/root`, so when you seal/verify/tool as the sudo user, call them by absolute path (`sudo bash /root/<script>`). And keep the remote command on **one line** — a newline inside the quotes turns `&& sudo bash /root/verify.sh` into a bare `sudo bash` (an interactive root shell) and the rest never runs.
 
 ## Go-live flow (proven)
 
 1. Provider create — `./provision-hetzner.sh` (Hetzner), or `hcloud server create … --image ubuntu-24.04` / any provider, with your SSH key for initial root.
 2. `scp` scripts + `config.env` to `~`; `ssh root@public` → `setup.sh` for everything **except** `firewall` (joins tailnet).
-3. From a machine on the same tailnet: `ssh <user>@<tailscale-ip> -p <port>` → `sudo setup.sh firewall` → `verify.sh`.
+3. From a machine on the same tailnet, seal + verify — note `ssh -t` (TTY for sudo's password) and **absolute** script paths (they were copied as root into `/root`, but you're the sudo user now), all on **one line**:
+   `ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall && sudo bash /root/verify.sh'`
 4. `tooling.sh` (reboot gate may fire) → reboot → `tooling.sh` again for the tools.
 5. `cleanup.sh`.
 
