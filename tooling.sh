@@ -228,7 +228,17 @@ step_uv() {
 step_python() {
   [[ "$INSTALL_PYTHON" == "true" ]] || { ok "python disabled (INSTALL_PYTHON=false)"; return; }
   apt_install python3 python3-venv python3-pip python3-dev python-is-python3 pipx
+  [[ "$CHECK" == "1" ]] && { would "verify system python3 >= 3.12"; return; }
+
+  local ver; ver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
   ok "system Python: $(python3 --version 2>/dev/null)"
+  # Want >= 3.12. On Ubuntu 24.04 apt gives 3.12; 22.04 gives 3.10.
+  if [[ -n "$ver" ]] && { [[ "${ver%%.*}" -gt 3 ]] || [[ "${ver#*.}" -ge 12 ]]; }; then
+    ok "system python3 is >= 3.12"
+  else
+    warn "system python3 is $ver (< 3.12). This box's release ships an older Python. \
+Provision on Ubuntu 24.04 for 3.12, or use uv: 'uv python install 3.12'."
+  fi
 }
 
 # =============================================================================
