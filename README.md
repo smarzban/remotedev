@@ -94,6 +94,39 @@ ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh && shred -u ~/config.
 - **Anti-lockout guards:** fails fast in preflight if no SSH key is available (before a single-use Tailscale key is consumed); won't disable password auth if the target user has no key; asserts sshd is actually listening on the new port before the firewall seals; won't seal the firewall unless Tailscale is `Running` (or you opt into public SSH); detects the session source (Tailscale CGNAT `100.64/10` or `fd7a:` v6) and refuses to seal if you're on a non-Tailscale link.
 - **Secrets hygiene:** `config.env` is git-ignored; secrets are not exported into child processes; the Tailscale auth key is passed via a 0600 tmpfs file (shredded after), never via the process command line.
 
+## Dev tooling (`tooling.sh`)
+
+`setup.sh` is security/access only. **`tooling.sh`** is a separate, optional
+layer that makes a hardened box useful for development — run it **after**
+`setup.sh` (it needs `TARGET_USER` to exist). It shares the same `config.env`,
+`CHECK=1` dry-run, and per-step conventions.
+
+```bash
+sudo CHECK=1 ./tooling.sh        # dry run
+sudo ./tooling.sh                # everything (respecting toggles)
+sudo ./tooling.sh docker uv      # only named steps
+# steps: upgrade docker brew uv python
+```
+
+| Step | Result |
+|---|---|
+| **upgrade** | Full `apt-get dist-upgrade` — the one thing `setup.sh` deliberately omits (it only does `update` + relies on unattended-upgrades for *security* patches). Warns if a reboot is required. |
+| **docker** | Docker CE from Docker's **signed apt repo** (not `curl\|sh`), service enabled, and `TARGET_USER` added to the `docker` group (so DevPod/IDEs can use the socket without sudo). |
+| **brew** | Homebrew (Linuxbrew), installed **as `TARGET_USER`** (the installer refuses root) and wired into their login shells. |
+| **uv** | Astral `uv`, installed **as `TARGET_USER`** into `~/.local/bin`. Use `uv python install <ver>` for pinned/extra Python versions. |
+| **python** | System Python base: `python3` + `venv` + `pip` + `dev` headers + `pipx` + `python-is-python3`. |
+
+Toggles (in `config.env`): `INSTALL_DOCKER`, `INSTALL_BREW`, `INSTALL_UV`,
+`INSTALL_PYTHON` (all default `true`; the `upgrade` step always runs).
+
+> **Security note:** adding `TARGET_USER` to the `docker` group is effectively
+> root-equivalent on the host — an accepted trade-off for a single-user dev box.
+> Skip it with `INSTALL_DOCKER=false` if you don't need a local container runtime
+> (e.g. you run DevPod against a Kubernetes provider instead).
+
+> **Reboot ordering:** if the `upgrade` step pulls a new kernel it'll ask for a
+> reboot. On a Tailscale-sealed box, reconnect over the tailnet afterwards.
+
 ## Notes vs. the reference posture
 
 - On the reference box the SSH directives lived in the main `sshd_config`; here they're in a
