@@ -18,7 +18,7 @@ state, then optionally make it a dev host. Reproducible by a human or an agent o
 | `provision-hetzner.sh` | **Provider-specific** (Hetzner/hcloud). Creates the box only (idempotent), waits for SSH, prints next steps. Does not harden. |
 | `setup.sh` | Security/access hardening core. Steps: `preflight user tailscale ssh fail2ban autoupgrades apparmor sysctl journald audit firewall` |
 | `verify.sh` | Read-only posture audit (exits nonzero on any fail) |
-| `tooling.sh` | Optional dev layer: `upgrade docker brew uv python` |
+| `tooling.sh` | Optional dev layer: `upgrade docker brew uv python node` |
 | `cleanup.sh` | Final scrub of provisioning artifacts (shreds `config.env`, removes logs + scripts + self) |
 | `config.env` | Per-box input (secrets). **git-ignored**, never committed |
 
