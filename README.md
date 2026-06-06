@@ -61,8 +61,10 @@ sudo ./setup.sh ssh firewall
 `/tmp`. Copy to the deploy user's home, lock it down, and remove it after:
 
 ```bash
-scp setup.sh verify.sh config.env user@newbox:~/        # ~ , not /tmp
-ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh && shred -u ~/config.env'
+scp setup.sh verify.sh tooling.sh cleanup.sh config.env user@newbox:~/   # ~ , not /tmp
+ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh'
+# ... then verify / tooling.sh as needed, and finally scrub (see Cleanup below):
+ssh user@newbox './cleanup.sh'
 ```
 
 > **Bootstrap window:** the `firewall` step runs *last* (anti-lockout), so between
@@ -93,6 +95,71 @@ ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh && shred -u ~/config.
 - **sshd is validated** (`sshd -t`) before any reload — a bad config never takes down the running daemon.
 - **Anti-lockout guards:** fails fast in preflight if no SSH key is available (before a single-use Tailscale key is consumed); won't disable password auth if the target user has no key; asserts sshd is actually listening on the new port before the firewall seals; won't seal the firewall unless Tailscale is `Running` (or you opt into public SSH); detects the session source (Tailscale CGNAT `100.64/10` or `fd7a:` v6) and refuses to seal if you're on a non-Tailscale link.
 - **Secrets hygiene:** `config.env` is git-ignored; secrets are not exported into child processes; the Tailscale auth key is passed via a 0600 tmpfs file (shredded after), never via the process command line.
+
+## Dev tooling (`tooling.sh`)
+
+`setup.sh` is security/access only. **`tooling.sh`** is a separate, optional
+layer that makes a hardened box useful for development — run it **after**
+`setup.sh` (it needs `TARGET_USER` to exist). It shares the same `config.env`,
+`CHECK=1` dry-run, and per-step conventions.
+
+```bash
+sudo CHECK=1 ./tooling.sh        # dry run
+sudo ./tooling.sh                # everything (respecting toggles)
+sudo ./tooling.sh docker uv      # only named steps
+# steps: upgrade docker brew uv python
+```
+
+| Step | Result |
+|---|---|
+| **upgrade** | Full `apt-get dist-upgrade` — the one thing `setup.sh` deliberately omits (it only does `update` + relies on unattended-upgrades for *security* patches). Warns if a reboot is required. |
+| **docker** | Docker CE from Docker's **signed apt repo** (not `curl\|sh`), service enabled, and `TARGET_USER` added to the `docker` group (so DevPod/IDEs can use the socket without sudo). |
+| **brew** | Homebrew (Linuxbrew), installed **as `TARGET_USER`** (the installer refuses root) and wired into their login shells. |
+| **uv** | Astral `uv`, installed **as `TARGET_USER`** into `~/.local/bin`. Use `uv python install <ver>` for pinned/extra Python versions. |
+| **python** | System Python base: `python3` + `venv` + `pip` + `dev` headers + `pipx` + `python-is-python3`. |
+
+Toggles (in `config.env`): `INSTALL_DOCKER`, `INSTALL_BREW`, `INSTALL_UV`,
+`INSTALL_PYTHON` (all default `true`; the `upgrade` step always runs).
+
+> **Security note:** adding `TARGET_USER` to the `docker` group is effectively
+> root-equivalent on the host — an accepted trade-off for a single-user dev box.
+> Skip it with `INSTALL_DOCKER=false` if you don't need a local container runtime
+> (e.g. you run DevPod against a Kubernetes provider instead).
+
+> **Reboot ordering:** `upgrade` runs first. If it pulls a new kernel,
+> `tooling.sh` **stops before installing the tools** and asks you to reboot, so
+> the tools land on the new kernel. Reboot, reconnect over the tailnet, and
+> re-run — `upgrade` is then a no-op and the tool steps proceed. If no reboot is
+> needed, it continues in a single pass. (The upgrade lives here, not in
+> `setup.sh`, to keep the security core minimal and free of reboot choreography.)
+
+## Cleanup (`cleanup.sh`)
+
+Run **last**, once the box is hardened, verified, and tooled. It scrubs every
+artifact this toolkit copied onto the box so nothing sensitive or unnecessary
+lingers — then removes itself:
+
+```bash
+CHECK=1 ./cleanup.sh     # preview what would be removed
+./cleanup.sh             # scrub
+```
+
+| Removes | |
+|---|---|
+| `config.env` | **shredded** (held `SUDO_PASSWORD` + the Tailscale auth key) |
+| `*.log` | `setup.sh` / `tooling.sh` run logs |
+| `setup.sh` `verify.sh` `tooling.sh` | the scripts |
+| `cleanup.sh` | itself, last |
+
+It only touches its own directory and only those known files (an allow-list — never
+arbitrary files), and is idempotent. The **hardened box itself is untouched** (users,
+firewall, sshd, Tailscale, tools all remain) — you'd just re-copy the scripts if you
+ever need to re-run them. No root needed if the files are owned by the run user.
+
+> **Why a separate script, not auto-cleanup:** `config.env` is the scripts' *input*,
+> and the flow relies on re-running them (idempotent reconcile; phased
+> bootstrap → seal → tooling across a reboot). Auto-deleting it at the end of every
+> run would break the next phase — so cleanup is an explicit, final step.
 
 ## Notes vs. the reference posture
 

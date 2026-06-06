@@ -6,7 +6,12 @@
 #   sudo ./verify.sh
 # Exits non-zero if any check fails.
 # =============================================================================
-set -uo pipefail
+# NOTE: deliberately NO `pipefail`. Checks are `cmd | grep -q '…'`; grep -q exits
+# on first match and closes the pipe, so the producer (e.g. `sshd -T`, which writes
+# ~100 lines) catches SIGPIPE and exits 141. With pipefail that 141 would mark the
+# pipeline failed even though grep matched — a flaky false FAIL. grep's own exit
+# status is the truth here.
+set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 [[ -f "$SCRIPT_DIR/config.env" ]] && . "$SCRIPT_DIR/config.env"
@@ -38,7 +43,9 @@ chk "access limited to sudo group"            "sshd -T 2>/dev/null | grep -qix '
 echo "== Firewall (sealed posture) =="
 chk "ufw active"                              "ufw status 2>/dev/null | grep -qi 'Status: active'"
 chk "default deny incoming"                   "ufw status verbose 2>/dev/null | grep -qi 'deny (incoming)'"
-chk "default deny routed"                     "ufw status verbose 2>/dev/null | grep -qi 'deny (routed)'"
+# ufw shows "deny (routed)" only when forwarding is on; with forwarding off it
+# prints "disabled (routed)". Check the configured policy directly — the source of truth.
+chk "default deny routed (FORWARD=DROP)"      "grep -q '^DEFAULT_FORWARD_POLICY=\"DROP\"' /etc/default/ufw"
 chk "IPv6 enabled in ufw"                     "grep -q '^IPV6=yes' /etc/default/ufw"
 chk "allow in on tailscale0 (v4)"             "ufw status 2>/dev/null | grep -Ei 'Anywhere +on tailscale0 +ALLOW'"
 chk "allow in on tailscale0 (v6)"             "ufw status 2>/dev/null | grep -Ei 'Anywhere \\(v6\\) on tailscale0 +ALLOW'"
