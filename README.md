@@ -82,10 +82,20 @@ sudo ./setup.sh ssh firewall
 
 ```bash
 scp setup.sh verify.sh tooling.sh cleanup.sh config.env user@newbox:~/   # ~ , not /tmp
-ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh'
+ssh -t user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh'
 # ... then verify / tooling.sh as needed, and finally scrub (see Cleanup below):
 ssh user@newbox './cleanup.sh'
 ```
+
+> **Running `sudo` over SSH:** use `ssh -t` so sudo gets a TTY for the password
+> (otherwise: *"sudo: a terminal is required"*). Keep the whole remote command on
+> **one line** — a line wrapped inside the quotes injects a literal newline and a
+> bare `sudo bash` will drop you into a root shell instead of running the script.
+>
+> **Where the scripts live matters for the seal.** In the phased go-live flow you
+> bootstrap as `root` (scripts land in `/root`) but seal/verify as the sudo user
+> over Tailscale — whose home doesn't have them. Run those by absolute path, e.g.
+> `ssh -t user@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall && sudo bash /root/verify.sh'`.
 
 > **Bootstrap window:** the `firewall` step runs *last* (anti-lockout), so between
 > the `ssh` and `firewall` steps a hardened-but-public sshd is briefly reachable on
