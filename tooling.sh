@@ -178,11 +178,14 @@ step_brew() {
     would "install Homebrew as $TARGET_USER (NONINTERACTIVE)"
   else
     log "installing Homebrew as '$TARGET_USER'"
-    local inst; inst="$(sudo -u "$TARGET_USER" mktemp)"
-    curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$inst"
-    chown "$TARGET_USER:$TARGET_USER" "$inst"
-    sudo -u "$TARGET_USER" -H env NONINTERACTIVE=1 bash "$inst"
-    rm -f "$inst"
+    # Pre-create the prefix owned by the user: the non-interactive installer
+    # would otherwise need (password) sudo to create /home/linuxbrew and abort.
+    install -d -o "$TARGET_USER" -g "$TARGET_USER" /home/linuxbrew
+    # Run curl + installer AS the target user via the upstream pipe form. We must
+    # NOT download as root into a deploy-owned /tmp file: fs.protected_regular=2
+    # (our own sysctl hardening) blocks cross-owner writes in sticky dirs.
+    sudo -u "$TARGET_USER" -H env NONINTERACTIVE=1 bash -c \
+      'bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     changed "installed Homebrew"
   fi
 
@@ -210,11 +213,9 @@ step_uv() {
   else
     log "installing uv as '$TARGET_USER'"
     apt_install curl
-    local inst; inst="$(sudo -u "$TARGET_USER" mktemp)"
-    curl -LsSf https://astral.sh/uv/install.sh -o "$inst"
-    chown "$TARGET_USER:$TARGET_USER" "$inst"
-    sudo -u "$TARGET_USER" -H sh "$inst"
-    rm -f "$inst"
+    # As the target user via the upstream pipe form (see brew note: cross-owner
+    # writes into /tmp are blocked by fs.protected_regular=2).
+    sudo -u "$TARGET_USER" -H sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
     changed "installed uv"
   fi
   ok "tip: '$TARGET_USER' can install Python versions with: uv python install 3.12"
