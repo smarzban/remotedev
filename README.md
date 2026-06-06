@@ -23,6 +23,26 @@ or an automated agent over SSH.
 > The `firewall` step refuses to seal the box unless Tailscale is `Running`
 > (override with `ALLOW_PUBLIC_SSH=true`).
 
+## Provisioning a Hetzner box (`provision-hetzner.sh`)
+
+Optional, **provider-specific** helper that *creates* the VPS (the only Hetzner-tied
+piece) and waits for SSH — then hands off to the provider-agnostic scripts below. It
+does **not** harden; that's `setup.sh`.
+
+```bash
+cp config.env.example config.env
+$EDITOR config.env                  # set HCLOUD_SSH_KEY (+ type/location/name)
+CHECK=1 ./provision-hetzner.sh      # dry run: show the plan, create nothing
+./provision-hetzner.sh              # create the box (idempotent: skips if it exists)
+COPY_TOOLKIT=true ./provision-hetzner.sh   # also scp the scripts + config.env over
+```
+
+Needs the [`hcloud` CLI](https://github.com/hetznercloud/cli), authenticated
+(`hcloud context create …`). Reads `HCLOUD_*` from `config.env` (or env-var
+overrides). On success it prints the exact next-step commands (bootstrap → seal →
+tooling → cleanup). Other providers: skip this and create the box however you like,
+then run `setup.sh`.
+
 ## Usage
 
 ```bash
@@ -62,10 +82,20 @@ sudo ./setup.sh ssh firewall
 
 ```bash
 scp setup.sh verify.sh tooling.sh cleanup.sh config.env user@newbox:~/   # ~ , not /tmp
-ssh user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh'
+ssh -t user@newbox 'chmod 600 ~/config.env && sudo ./setup.sh'
 # ... then verify / tooling.sh as needed, and finally scrub (see Cleanup below):
 ssh user@newbox './cleanup.sh'
 ```
+
+> **Running `sudo` over SSH:** use `ssh -t` so sudo gets a TTY for the password
+> (otherwise: *"sudo: a terminal is required"*). Keep the whole remote command on
+> **one line** — a line wrapped inside the quotes injects a literal newline and a
+> bare `sudo bash` will drop you into a root shell instead of running the script.
+>
+> **Where the scripts live matters for the seal.** In the phased go-live flow you
+> bootstrap as `root` (scripts land in `/root`) but seal/verify as the sudo user
+> over Tailscale — whose home doesn't have them. Run those by absolute path, e.g.
+> `ssh -t user@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall && sudo bash /root/verify.sh'`.
 
 > **Bootstrap window:** the `firewall` step runs *last* (anti-lockout), so between
 > the `ssh` and `firewall` steps a hardened-but-public sshd is briefly reachable on
