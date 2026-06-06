@@ -248,11 +248,23 @@ main() {
   local steps=("$@")
   [[ ${#steps[@]} -eq 0 ]] && steps=("${ALL_STEPS[@]}")
   [[ "$CHECK" == "1" ]] && warn "CHECK=1 dry-run — no changes will be made."
-  for s in "${steps[@]}"; do
+  local i n="${#steps[@]}"
+  for ((i = 0; i < n; i++)); do
+    local s="${steps[$i]}"
     local fn="step_${s}"
     declare -F "$fn" >/dev/null || die "unknown step '$s' (valid: ${ALL_STEPS[*]})"
     log "STEP: $s"
     "$fn"
+    # Reboot gate: if the upgrade pulled a new kernel and more steps remain,
+    # stop and let the box reboot onto it before tools are laid on top.
+    # Re-running is a no-op for 'upgrade' (nothing left to patch), so the
+    # tools install on the second pass.
+    if [[ "$s" == "upgrade" && "$CHECK" != "1" && -f /var/run/reboot-required && $((i + 1)) -lt n ]]; then
+      warn "Reboot required before the remaining steps (${steps[*]:i+1})."
+      log  "Reboot onto the new kernel, then re-run to install the tooling:"
+      printf '    sudo reboot\n    # reconnect over Tailscale, then:\n    sudo ./tooling.sh %s\n' "${steps[*]:i+1}"
+      exit 0
+    fi
   done
   log "done."
 }

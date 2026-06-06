@@ -124,8 +124,12 @@ Toggles (in `config.env`): `INSTALL_DOCKER`, `INSTALL_BREW`, `INSTALL_UV`,
 > Skip it with `INSTALL_DOCKER=false` if you don't need a local container runtime
 > (e.g. you run DevPod against a Kubernetes provider instead).
 
-> **Reboot ordering:** if the `upgrade` step pulls a new kernel it'll ask for a
-> reboot. On a Tailscale-sealed box, reconnect over the tailnet afterwards.
+> **Reboot ordering:** `upgrade` runs first. If it pulls a new kernel,
+> `tooling.sh` **stops before installing the tools** and asks you to reboot, so
+> the tools land on the new kernel. Reboot, reconnect over the tailnet, and
+> re-run — `upgrade` is then a no-op and the tool steps proceed. If no reboot is
+> needed, it continues in a single pass. (The upgrade lives here, not in
+> `setup.sh`, to keep the security core minimal and free of reboot choreography.)
 
 ## Notes vs. the reference posture
 
