@@ -147,9 +147,11 @@ sudo ./tooling.sh docker uv      # only named steps
 | **brew** | Homebrew (Linuxbrew), installed **as `TARGET_USER`** (the installer refuses root) and wired into their login shells. |
 | **uv** | Astral `uv`, installed **as `TARGET_USER`** into `~/.local/bin`. Use `uv python install <ver>` for pinned/extra Python versions. |
 | **python** | System Python base: `python3` + `venv` + `pip` + `dev` headers + `pipx` + `python-is-python3`. |
+| **node** | Node.js + `npm` from NodeSource's **signed apt repo** (same pattern as Docker). Major pinned by `NODE_MAJOR` (default `22`). |
 
 Toggles (in `config.env`): `INSTALL_DOCKER`, `INSTALL_BREW`, `INSTALL_UV`,
-`INSTALL_PYTHON` (all default `true`; the `upgrade` step always runs).
+`INSTALL_PYTHON`, `INSTALL_NODE` (all default `true`; the `upgrade` step always
+runs). `NODE_MAJOR` selects the Node major (e.g. `22`, `24`).
 
 > **Security note:** adding `TARGET_USER` to the `docker` group is effectively
 > root-equivalent on the host — an accepted trade-off for a single-user dev box.

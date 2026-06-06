@@ -13,12 +13,13 @@
 #   sudo ./tooling.sh docker uv        # run only named steps
 #   sudo CHECK=1 ./tooling.sh          # dry-run: print what would change, change nothing
 #
-# Steps, in order: upgrade docker brew uv python
+# Steps, in order: upgrade docker brew uv python node
 #   upgrade  full `apt-get dist-upgrade` (setup.sh only does `update`, never upgrade)
 #   docker   Docker CE from Docker's signed apt repo + adds TARGET_USER to docker group
 #   brew     Homebrew (Linuxbrew), installed AS TARGET_USER (never as root)
 #   uv       Astral uv, installed AS TARGET_USER (standalone installer)
 #   python   system Python base (python3 + venv + pip + dev); uv manages extra versions
+#   node     Node.js + npm from NodeSource's signed apt repo (major via NODE_MAJOR)
 # =============================================================================
 set -euo pipefail
 
@@ -39,8 +40,10 @@ INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 INSTALL_BREW="${INSTALL_BREW:-true}"
 INSTALL_UV="${INSTALL_UV:-true}"
 INSTALL_PYTHON="${INSTALL_PYTHON:-true}"
+INSTALL_NODE="${INSTALL_NODE:-true}"
+NODE_MAJOR="${NODE_MAJOR:-22}"           # Node major from NodeSource (e.g. 22 LTS, 24)
 
-ALL_STEPS=(upgrade docker brew uv python)
+ALL_STEPS=(upgrade docker brew uv python node)
 
 # --- output helpers (same vocabulary as setup.sh) --------------------------
 if [[ -t 1 ]]; then C_G=$'\e[32m'; C_Y=$'\e[33m'; C_R=$'\e[31m'; C_B=$'\e[1m'; C_0=$'\e[0m'
@@ -240,6 +243,39 @@ step_python() {
     warn "system python3 is $ver (< 3.12). This box's release ships an older Python. \
 Provision on Ubuntu 24.04 for 3.12, or use uv: 'uv python install 3.12'."
   fi
+}
+
+# =============================================================================
+# STEP: node — Node.js + npm from NodeSource's official SIGNED apt repo
+#   (mirrors the docker step). System-wide; pin the major with NODE_MAJOR.
+# =============================================================================
+step_node() {
+  [[ "$INSTALL_NODE" == "true" ]] || { ok "node disabled (INSTALL_NODE=false)"; return; }
+
+  if command -v node &>/dev/null && command -v npm &>/dev/null; then
+    ok "node installed ($(node --version 2>/dev/null) / npm $(npm --version 2>/dev/null))"
+    return
+  fi
+
+  apt_install ca-certificates curl
+  do_run "install -m 0755 -d /etc/apt/keyrings"
+  if [[ ! -f /etc/apt/keyrings/nodesource.asc ]]; then
+    do_run "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /etc/apt/keyrings/nodesource.asc"
+    do_run "chmod a+r /etc/apt/keyrings/nodesource.asc"
+  fi
+  local arch repo
+  arch="$(dpkg --print-architecture)"
+  repo="deb [arch=$arch signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main"
+  if [[ "$CHECK" == "1" ]]; then
+    would "write /etc/apt/sources.list.d/nodesource.list: $repo"
+  elif [[ ! -f /etc/apt/sources.list.d/nodesource.list ]] \
+       || ! grep -qF "$repo" /etc/apt/sources.list.d/nodesource.list; then
+    printf '%s\n' "$repo" > /etc/apt/sources.list.d/nodesource.list
+    changed "wrote /etc/apt/sources.list.d/nodesource.list (Node ${NODE_MAJOR}.x)"
+  fi
+  do_run "apt-get update -q"
+  apt_install nodejs
+  [[ "$CHECK" == "1" ]] || ok "node $(node --version 2>/dev/null) / npm $(npm --version 2>/dev/null)"
 }
 
 # =============================================================================
