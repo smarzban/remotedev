@@ -1,0 +1,2 @@
+# Local, secret-bearing config (contains TS_AUTHKEY) — never commit.
+config.env
