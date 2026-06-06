@@ -23,6 +23,26 @@ or an automated agent over SSH.
 > The `firewall` step refuses to seal the box unless Tailscale is `Running`
 > (override with `ALLOW_PUBLIC_SSH=true`).
 
+## Provisioning a Hetzner box (`provision-hetzner.sh`)
+
+Optional, **provider-specific** helper that *creates* the VPS (the only Hetzner-tied
+piece) and waits for SSH — then hands off to the provider-agnostic scripts below. It
+does **not** harden; that's `setup.sh`.
+
+```bash
+cp config.env.example config.env
+$EDITOR config.env                  # set HCLOUD_SSH_KEY (+ type/location/name)
+CHECK=1 ./provision-hetzner.sh      # dry run: show the plan, create nothing
+./provision-hetzner.sh              # create the box (idempotent: skips if it exists)
+COPY_TOOLKIT=true ./provision-hetzner.sh   # also scp the scripts + config.env over
+```
+
+Needs the [`hcloud` CLI](https://github.com/hetznercloud/cli), authenticated
+(`hcloud context create …`). Reads `HCLOUD_*` from `config.env` (or env-var
+overrides). On success it prints the exact next-step commands (bootstrap → seal →
+tooling → cleanup). Other providers: skip this and create the box however you like,
+then run `setup.sh`.
+
 ## Usage
 
 ```bash

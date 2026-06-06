@@ -15,6 +15,7 @@ state, then optionally make it a dev host. Reproducible by a human or an agent o
 
 | Script | Role |
 |---|---|
+| `provision-hetzner.sh` | **Provider-specific** (Hetzner/hcloud). Creates the box only (idempotent), waits for SSH, prints next steps. Does not harden. |
 | `setup.sh` | Security/access hardening core. Steps: `preflight user tailscale ssh fail2ban autoupgrades apparmor sysctl journald audit firewall` |
 | `verify.sh` | Read-only posture audit (exits nonzero on any fail) |
 | `tooling.sh` | Optional dev layer: `upgrade docker brew uv python` |
@@ -50,9 +51,9 @@ no open ports. Reachable only over Tailscale.
 - **`fs.protected_regular=2`** (set by `step_sysctl`) blocks root from writing a user-owned file in sticky `/tmp`. So installers run **as the target user** via the upstream pipe form (no cross-owned temp file), and Homebrew's prefix `/home/linuxbrew` is pre-created owned by the user so its non-interactive installer needn't password-sudo.
 - **`tooling.sh` reboot gate:** if `upgrade` pulls a new kernel and later steps remain, it stops → reboot → re-run continues (idempotent). Keeps the dist-upgrade/reboot dance out of `setup.sh`.
 
-## Go-live flow (proven; to be codified as `provision-hetzner.sh`)
+## Go-live flow (proven)
 
-1. Provider create (e.g. `hcloud server create … --image ubuntu-24.04`) with your SSH key for initial root.
+1. Provider create — `./provision-hetzner.sh` (Hetzner), or `hcloud server create … --image ubuntu-24.04` / any provider, with your SSH key for initial root.
 2. `scp` scripts + `config.env` to `~`; `ssh root@public` → `setup.sh` for everything **except** `firewall` (joins tailnet).
 3. From a machine on the same tailnet: `ssh <user>@<tailscale-ip> -p <port>` → `sudo setup.sh firewall` → `verify.sh`.
 4. `tooling.sh` (reboot gate may fire) → reboot → `tooling.sh` again for the tools.
@@ -60,7 +61,7 @@ no open ports. Reachable only over Tailscale.
 
 ## Roadmap / open items
 
-- `provision-hetzner.sh` — thin `hcloud` wrapper that orchestrates the flow above and ends with `cleanup.sh`.
+- `provision-hetzner.sh` is create-only by design. A future fuller orchestrator (create → setup → seal → tooling → cleanup in one command) could build on it if wanted.
 - DevPod: host runs the container natively; `ALLOW_SSH_FORWARDING=false` may block IDE port-forwarding — flip if needed.
 - Ubuntu **24.04** is the target (Python 3.12 baseline; 22.04 ships 3.10).
 
