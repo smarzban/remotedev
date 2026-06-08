@@ -79,4 +79,8 @@ if [[ "$CHECK" == "1" ]]; then
 else
   log "done — removing $SELF"
   rm -f "$SCRIPT_DIR/$SELF"
+  echo
+  log "All done — the box is hardened, sealed, verified, tooled, and scrubbed. 🎉"
+  echo
+  log "Tip — on your LOCAL machine, run ./ssh-alias.sh to add an 'ssh <name>' shortcut over Tailscale."
 fi
