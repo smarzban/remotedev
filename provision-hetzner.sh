@@ -64,11 +64,13 @@ printf '    name=%s  type=%s  image=%s  location=%s  ssh-key=%s\n' \
   "$HCLOUD_SERVER_NAME" "$HCLOUD_SERVER_TYPE" "$HCLOUD_IMAGE" "$HCLOUD_LOCATION" "$HCLOUD_SSH_KEY"
 
 # --- create (idempotent) ---------------------------------------------------
+CREATED=0
 if hcloud server describe "$HCLOUD_SERVER_NAME" >/dev/null 2>&1; then
   ok "server '$HCLOUD_SERVER_NAME' already exists — not recreating."
 else
   do_run "hcloud server create --name '$HCLOUD_SERVER_NAME' --type '$HCLOUD_SERVER_TYPE' \
 --image '$HCLOUD_IMAGE' --location '$HCLOUD_LOCATION' --ssh-key '$HCLOUD_SSH_KEY' --label project=remotedev"
+  CREATED=1
   [[ "$CHECK" == "1" ]] || changed "created server '$HCLOUD_SERVER_NAME'"
 fi
 
@@ -90,6 +92,20 @@ done
 [[ "$ready" == "1" ]] || die "SSH on $IP:22 did not come up in time. Check the Hetzner console."
 ok "SSH is up on $IP:22"
 
+# --- clear stale host key on a freshly-created box -------------------------
+# Hetzner recycles public IPs: a deleted box's key may still be pinned in
+# known_hosts for this IP, which makes scp/ssh fail strict-checking with
+# "REMOTE HOST IDENTIFICATION HAS CHANGED". We only created the box just now,
+# so any pinned key for this IP is definitionally stale — drop it (accept-new
+# below re-pins the real one). Guarded on CREATED so we never touch the pin of
+# a pre-existing box we didn't make.
+if [[ "$CREATED" == "1" ]] && command -v ssh-keygen >/dev/null; then
+  if ssh-keygen -F "$IP" >/dev/null 2>&1; then
+    do_run "ssh-keygen -R '$IP' >/dev/null 2>&1 || true"
+    changed "removed stale known_hosts entry for $IP (recycled IP)"
+  fi
+fi
+
 # --- optional: copy the toolkit over ---------------------------------------
 if [[ "$COPY_TOOLKIT" == "true" ]]; then
   log "copying toolkit + config.env to root@$IP:~ (chmod 600 config.env)"
@@ -100,20 +116,19 @@ if [[ "$COPY_TOOLKIT" == "true" ]]; then
   changed "toolkit copied to root@$IP"
 fi
 
-# --- next steps ------------------------------------------------------------
+# --- next step -------------------------------------------------------------
+# Print ONLY the immediate next command; each script then prints the one after
+# it (bootstrap → seal → verify → tooling → cleanup), so the operator just
+# follows along instead of reading a wall of runbook up front.
 log "Box '$HCLOUD_SERVER_NAME' is ready at $IP."
 echo
-echo "Next — harden + seal (see CLAUDE.md 'Go-live flow'):"
 if [[ "$COPY_TOOLKIT" != "true" ]]; then
-  echo "  scp setup.sh verify.sh tooling.sh cleanup.sh config.env root@$IP:~/"
-  echo "  ssh root@$IP 'chmod 600 ~/config.env'"
+  log "Next — copy the toolkit over, then bootstrap (it prints the step after it):"
+  echo "    scp setup.sh verify.sh tooling.sh cleanup.sh config.env root@$IP:~/ && ssh root@$IP 'chmod 600 ~/config.env'"
+  echo "    ssh root@$IP './setup.sh bootstrap'"
+else
+  log "Next — bootstrap over the public IP (everything EXCEPT the firewall seal):"
+  echo "    ssh root@$IP './setup.sh bootstrap'"
 fi
-echo "  # 1) bootstrap over the public IP (everything EXCEPT the firewall seal):"
-echo "  ssh root@$IP './setup.sh preflight user tailscale ssh fail2ban autoupgrades apparmor sysctl journald audit'"
-echo "  # 2) reconnect over Tailscale and seal (run from a machine on the same tailnet)."
-echo "  #    Note: scripts live in /root (copied as root), so use absolute paths; and"
-echo "  #    'ssh -t' gives sudo a TTY for the password. Keep each command on ONE line."
-echo "  ssh -t $TARGET_USER@<tailscale-ip> -p $SSH_PORT 'sudo bash /root/setup.sh firewall && sudo bash /root/verify.sh'"
-echo "  # 3) optional dev tools, then scrub:"
-echo "  ssh -t $TARGET_USER@<tailscale-ip> -p $SSH_PORT 'sudo bash /root/tooling.sh'   # reboot gate may fire"
-echo "  ssh -t $TARGET_USER@<tailscale-ip> -p $SSH_PORT 'sudo bash /root/cleanup.sh'"
+echo
+echo "(Each script prints the next command when it finishes — just follow along: seal → verify → tooling → cleanup.)"

@@ -7,11 +7,14 @@
 # Usage (run as root, or via sudo):
 #   cp config.env.example config.env && edit config.env
 #   sudo ./setup.sh                 # run everything
+#   sudo ./setup.sh bootstrap       # everything EXCEPT the firewall seal (public-IP phase)
 #   sudo ./setup.sh ssh firewall    # run only named steps
 #   sudo CHECK=1 ./setup.sh         # dry-run: print what would change, change nothing
 #
 # Steps, in order: preflight user tailscale ssh fail2ban autoupgrades apparmor
 #                  sysctl journald audit firewall
+#   (plus the 'bootstrap' alias = all of the above except 'firewall')
+# When it finishes a step it prints the single next command to run.
 #
 # SECURITY MODEL: the firewall's end-state allows inbound
 # ONLY on tailscale0 — the public internet sees no open ports. To avoid locking
@@ -547,20 +550,41 @@ gate. If you are on a non-Tailscale link this may drop your session."
 # =============================================================================
 # runner
 # =============================================================================
+# Print ONLY the single command to run next, so the operator copy-pastes their
+# way through the flow (provision → bootstrap → seal → verify → tooling → cleanup).
+# Must never influence exit status.
+emit_next_step() {
+  local sealed="$1" ip
+  ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
+  echo
+  if [[ "$sealed" == "1" ]]; then
+    log "Next — verify the sealed posture (run from a machine on the tailnet):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/verify.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  else
+    log "Next — reconnect over Tailscale and seal the firewall (from a tailnet machine, ONE line):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/setup.sh firewall'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  fi
+}
+
 main() {
   local steps=("$@")
   [[ ${#steps[@]} -eq 0 ]] && steps=("${ALL_STEPS[@]}")
+  # 'bootstrap' = every step EXCEPT the firewall seal — the public-IP phase you
+  # run before reconnecting over Tailscale to seal. Expand it to the real list.
+  if [[ " ${steps[*]} " == *" bootstrap "* ]]; then
+    steps=(); for s in "${ALL_STEPS[@]}"; do [[ "$s" == "firewall" ]] || steps+=("$s"); done
+  fi
   [[ "$CHECK" == "1" ]] && warn "CHECK=1 dry-run — no changes will be made."
+  local sealed=0
   for s in "${steps[@]}"; do
     local fn="step_${s}"
-    declare -F "$fn" >/dev/null || die "unknown step '$s' (valid: ${ALL_STEPS[*]})"
+    declare -F "$fn" >/dev/null || die "unknown step '$s' (valid: ${ALL_STEPS[*]} | bootstrap)"
     log "STEP: $s"
     "$fn"
+    [[ "$s" == "firewall" ]] && sealed=1
   done
   log "done."
-  # Convenience hint only — must not influence the script's exit status.
-  if [[ "$ALLOW_PUBLIC_SSH" != "true" ]] && command -v tailscale &>/dev/null; then
-    echo "Reach this box at: ssh -p ${SSH_PORT} ${TARGET_USER}@$(tailscale ip -4 2>/dev/null | head -1)"
-  fi
+  [[ "$CHECK" == "1" ]] && return 0
+  emit_next_step "$sealed"
 }
 main "$@"
