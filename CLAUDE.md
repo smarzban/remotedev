@@ -20,6 +20,7 @@ state, then optionally make it a dev host. Reproducible by a human or an agent o
 | `verify.sh` | Read-only posture audit (exits nonzero on any fail) |
 | `tooling.sh` | Optional dev layer: `upgrade docker brew uv python node` |
 | `cleanup.sh` | Final scrub of provisioning artifacts (shreds `config.env`, removes logs + scripts + self) |
+| `ssh-alias.sh` | **Local, optional.** Writes a `Host <name>` block to the operator's `~/.ssh/config` (Tailscale IP via local `tailscale ip -4`). Runs on the Mac, never on the box. |
 | `config.env` | Per-box input (secrets). **git-ignored**, never committed |
 
 ## Security model (the point of the whole thing)
@@ -51,15 +52,22 @@ no open ports. Reachable only over Tailscale.
 - **`fs.protected_regular=2`** (set by `step_sysctl`) blocks root from writing a user-owned file in sticky `/tmp`. So installers run **as the target user** via the upstream pipe form (no cross-owned temp file), and Homebrew's prefix `/home/linuxbrew` is pre-created owned by the user so its non-interactive installer needn't password-sudo.
 - **`tooling.sh` reboot gate:** if `upgrade` pulls a new kernel and later steps remain, it stops → reboot → re-run continues (idempotent). Keeps the dist-upgrade/reboot dance out of `setup.sh`.
 - **Running steps over SSH (proven on a 2nd box):** `sudo` over `ssh` needs a TTY — use `ssh -t` or you get *"sudo: a terminal is required"*. Scripts copied as root sit in `/root`, so when you seal/verify/tool as the sudo user, call them by absolute path (`sudo bash /root/<script>`). And keep the remote command on **one line** — a newline inside the quotes turns `&& sudo bash /root/verify.sh` into a bare `sudo bash` (an interactive root shell) and the rest never runs.
+- **Self-guiding next-step output:** each script prints the *single* next command on success (provision → `setup.sh bootstrap` → seal → `verify.sh` → `tooling.sh` → `cleanup.sh`), pre-filled with the box's Tailscale IP where it knows it. `setup.sh bootstrap` is an alias = all steps except `firewall`. Keep these emitters out of the exit-status path (they run after `log done`, guarded by `CHECK`). Don't reintroduce a single up-front wall-of-runbook dump.
+- **Recycled-IP host keys:** Hetzner reuses public IPs, so a deleted box's key lingers pinned in local `known_hosts` and trips "REMOTE HOST IDENTIFICATION HAS CHANGED" on the next box. `provision-hetzner.sh` clears the stale entry **only when it just created the box** (`CREATED=1`), never for a pre-existing one. Manual fix for the already-exists case: `ssh-keygen -R <ip>`.
+- **The SSH alias is a standalone LOCAL script (`ssh-alias.sh`), run on the operator's machine — never on the box.** An `~/.ssh/config` alias is a local artifact; `setup.sh`/`cleanup.sh` run *on the box* and can't touch the operator's machine. `ssh-alias.sh` resolves the box's Tailscale IP locally via `tailscale ip -4 <name>` (the Mac's own tailnet view — no SSH into the box, no MagicDNS dependency) and writes a marker-delimited managed block (idempotent). It's optional/opt-in (just run it), so there's deliberately **no config flag**; `cleanup.sh` prints a one-line reminder to run it. It is NOT scp'd to the box and NOT in `cleanup.sh`'s remove-list.
 
 ## Go-live flow (proven)
 
+Each script prints the next command, so in practice you follow the chain. The full sequence:
+
 1. Provider create — `./provision-hetzner.sh` (Hetzner), or `hcloud server create … --image ubuntu-24.04` / any provider, with your SSH key for initial root.
-2. `scp` scripts + `config.env` to `~`; `ssh root@public` → `setup.sh` for everything **except** `firewall` (joins tailnet).
-3. From a machine on the same tailnet, seal + verify — note `ssh -t` (TTY for sudo's password) and **absolute** script paths (they were copied as root into `/root`, but you're the sudo user now), all on **one line**:
-   `ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall && sudo bash /root/verify.sh'`
+2. `scp` scripts + `config.env` to `~`; `ssh root@public './setup.sh bootstrap'` — everything **except** `firewall` (joins tailnet).
+3. From a machine on the same tailnet, seal then verify — note `ssh -t` (TTY for sudo's password) and **absolute** script paths (they were copied as root into `/root`, but you're the sudo user now), each on **one line**:
+   `ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall'` then `… 'sudo bash /root/verify.sh'`
 4. `tooling.sh` (reboot gate may fire) → reboot → `tooling.sh` again for the tools.
 5. `cleanup.sh`.
+
+(Full operator-facing detail lives in `README.md` + `docs/`; this is the maintainer summary.)
 
 ## Roadmap / open items
 

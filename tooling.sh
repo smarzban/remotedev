@@ -36,6 +36,7 @@ fi
 
 # Defaults (config.env / env vars override these)
 TARGET_USER="${TARGET_USER:-deploy}"
+SSH_PORT="${SSH_PORT:-2202}"             # only used to print the next-step hint
 INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 INSTALL_BREW="${INSTALL_BREW:-true}"
 INSTALL_UV="${INSTALL_UV:-true}"
@@ -285,6 +286,8 @@ main() {
   local steps=("$@")
   [[ ${#steps[@]} -eq 0 ]] && steps=("${ALL_STEPS[@]}")
   [[ "$CHECK" == "1" ]] && warn "CHECK=1 dry-run — no changes will be made."
+  # Tailscale IP of this box, for the copy-pasteable next-step hints below.
+  local ip; ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
   local i n="${#steps[@]}"
   for ((i = 0; i < n; i++)); do
     local s="${steps[$i]}"
@@ -298,11 +301,19 @@ main() {
     # tools install on the second pass.
     if [[ "$s" == "upgrade" && "$CHECK" != "1" && -f /var/run/reboot-required && $((i + 1)) -lt n ]]; then
       warn "Reboot required before the remaining steps (${steps[*]:i+1})."
-      log  "Reboot onto the new kernel, then re-run to install the tooling:"
-      printf '    sudo reboot\n    # reconnect over Tailscale, then:\n    sudo ./tooling.sh %s\n' "${steps[*]:i+1}"
+      echo
+      log "Next — reboot onto the new kernel, then re-run tooling (from your local terminal):"
+      printf "    ssh -t %s@%s -p %s 'sudo reboot'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+      printf "    # wait ~30-60s for it to come back, then re-run (upgrade is now a no-op):\n"
+      printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
       exit 0
     fi
   done
   log "done."
+  [[ "$CHECK" == "1" ]] && return 0
+  # Single next command: scrub the provisioning artifacts off the box.
+  echo
+  log "Next — scrub the toolkit + secrets off the box (run from a tailnet machine):"
+  printf "    ssh -t %s@%s -p %s 'sudo bash /root/cleanup.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
 }
 main "$@"
