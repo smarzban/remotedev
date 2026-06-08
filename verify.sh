@@ -89,4 +89,13 @@ fi
 
 echo
 echo "Passed: $pass  Failed: $fail"
+
+# On a clean pass, print the single next command — install dev tooling.
+if [[ $fail -eq 0 ]]; then
+  ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
+  echo
+  echo "Next — install dev tooling (run from a machine on the tailnet):"
+  printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+fi
+
 [[ $fail -eq 0 ]]
