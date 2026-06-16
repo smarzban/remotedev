@@ -124,7 +124,7 @@ log "Box '$HCLOUD_SERVER_NAME' is ready at $IP."
 echo
 if [[ "$COPY_TOOLKIT" != "true" ]]; then
   log "Next — copy the toolkit over, then bootstrap (it prints the step after it):"
-  echo "    scp setup.sh verify.sh tooling.sh cleanup.sh config.env root@$IP:~/ && ssh root@$IP 'chmod 600 ~/config.env'"
+  echo "    scp setup.sh verify.sh tooling.sh cleanup.sh config.env root@$IP:~/ && ssh root@$IP 'chmod 600 ~/config.env && chmod +x ~/*.sh'"
   echo "    ssh root@$IP './setup.sh bootstrap'"
 else
   log "Next — bootstrap over the public IP (everything EXCEPT the firewall seal):"
