@@ -49,6 +49,9 @@ provision → setup.sh bootstrap → (seal) → verify.sh → tooling.sh → cle
 > literal newline — a bare `sudo bash` then drops you into an interactive root shell
 > instead of running the script, and the rest of the command never runs.
 
+Hit a wall — locked out, a step refusing to run, a host-key error? See
+[troubleshooting](troubleshooting.md).
+
 ## SSH alias (`ssh-alias.sh`)
 
 Tired of typing `ssh -t <user>@<tailscale-ip> -p <port> '…'`? Run the optional
@@ -85,6 +88,10 @@ single-use** Tailscale auth key so a captured key is already spent.
 
 ## Secrets on the box
 
-`config.env` holds a Tailscale auth key and the sudo password — **do not** leave it
-in world-readable `/tmp`. Copy it to the deploy user's home and lock it down
-(`chmod 600`), and run [`cleanup.sh`](cleanup.md) at the end to shred it.
+`config.env` holds a Tailscale auth key and the sudo password — treat it as
+sensitive. The toolkit lands in **root's home (`/root`)** — that's why you call the
+scripts by absolute path (`/root/<script>`) once you're the sudo user — and
+`config.env` lives there too, `chmod 600`. `COPY_TOOLKIT=true` (and the next-step
+`scp … && ssh … 'chmod 600 ~/config.env'` hint) does this for you; do the same if
+you `scp` by hand. **Don't** leave it world-readable in `/tmp`. Run
+[`cleanup.sh`](cleanup.md) at the end to shred it.

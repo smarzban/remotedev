@@ -37,12 +37,15 @@ Put `CHECK=1` in front of any script for a full dry-run (changes nothing).
 
 ## Docs
 
+Full guide and "who starts where" index: [`docs/`](docs/README.md).
+
 - [Security model & what gets hardened](docs/security-model.md)
 - [Configuration reference (`config.env`)](docs/configuration.md)
 - [Provisioning a Hetzner box](docs/provisioning.md)
 - [Running remotely / go-live flow](docs/running-remotely.md)
 - [Dev tooling layer](docs/tooling.md)
 - [Cleanup](docs/cleanup.md)
+- [Troubleshooting & recovery](docs/troubleshooting.md)
 
 Working on the toolkit itself? See [`CLAUDE.md`](CLAUDE.md) for conventions and the
 anti-lockout invariants.
