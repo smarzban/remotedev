@@ -1,40 +1,17 @@
-# Running remotely / go-live flow
+# Running remotely over SSH
 
-The toolkit is meant to be driven over SSH. Each script prints the **single next
-command** when it finishes, so you copy-paste your way through the flow rather than
-reading the whole runbook up front:
+The toolkit is meant to be **driven over SSH** — bootstrap over the public IP, then
+reconnect over Tailscale to seal, verify, tool, and clean up. This page is the
+reference for the *mechanics* of doing that: the gotchas that bite, the optional
+`ssh <name>` shortcut, the bootstrap-window risk, and where secrets live on the box.
+
+For the step-by-step walkthrough — what to run, in order — see the
+**[full guide](guide.md)**. Each script also prints the single next command when it
+finishes, so in practice you just follow along:
 
 ```
-provision → setup.sh bootstrap → (seal) → verify.sh → tooling.sh → cleanup.sh
+get a box → setup.sh bootstrap → (seal over Tailscale) → verify.sh → tooling.sh → cleanup.sh
 ```
-
-## The flow
-
-1. **Create the box.** [`provision-hetzner.sh`](provisioning.md) (Hetzner), or any
-   provider with your SSH key for initial root. Copy the toolkit + `config.env` to
-   the box (or use `COPY_TOOLKIT=true`).
-
-2. **Bootstrap over the public IP** (everything *except* the firewall seal — this is
-   what the `bootstrap` alias means). Run as `root`:
-   ```bash
-   ssh root@<public-ip> './setup.sh bootstrap'
-   ```
-   This joins the tailnet. It prints the seal command next, pre-filled with the
-   box's new Tailscale IP.
-
-3. **Reconnect over Tailscale and seal**, then **verify** — as the sudo user, from a
-   machine on the same tailnet. `setup.sh firewall` prints the verify command; run it:
-   ```bash
-   ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/setup.sh firewall'
-   ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/verify.sh'
-   ```
-
-4. **Tooling** (optional) → **cleanup**. `verify.sh` prints the tooling command;
-   `tooling.sh` prints the cleanup command:
-   ```bash
-   ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/tooling.sh'   # reboot gate may fire
-   ssh -t <user>@<tailscale-ip> -p <port> 'sudo bash /root/cleanup.sh'
-   ```
 
 ## Three remote-execution gotchas (learned the hard way)
 

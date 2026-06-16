@@ -41,21 +41,27 @@ you copy-paste your way through the flow.
 
 ## Quickstart
 
+Works on **any** Ubuntu/Debian VPS you can SSH into as root — bring your own box:
+
 ```bash
-# 1. Configure — copy the template, fill in your keys + secrets (git-ignored)
+# 1. Configure (git-ignored) — your SSH public key, a sudo password, a Tailscale auth key
 cp config.env.example config.env && $EDITOR config.env
 
-# 2. Create the box — Hetzner helper (or bring your own VPS and skip to step 3)
-COPY_TOOLKIT=true ./provision-hetzner.sh
+# 2. Copy the toolkit onto a fresh Ubuntu box you can reach as root (any provider)
+scp setup.sh verify.sh tooling.sh cleanup.sh config.env root@<host>:~/
+ssh root@<host> 'chmod 600 ~/config.env && chmod +x ~/*.sh'
 
-# 3. Harden it — run bootstrap, then just follow the "Next:" line each script prints
+# 3. Harden + join the tailnet, then follow the "Next:" line each script prints
 #    (bootstrap → seal over Tailscale → verify → tooling → cleanup)
-ssh root@<public-ip> './setup.sh bootstrap'
+ssh root@<host> './setup.sh bootstrap'
 ```
 
-Prefix any script with `CHECK=1` for a full dry-run (changes nothing). The full
-go-live flow — including sealing the firewall *over Tailscale* — is in
-[running remotely](docs/running-remotely.md).
+On Hetzner? `COPY_TOOLKIT=true ./provision-hetzner.sh` creates the box **and** copies
+the toolkit for you in one step — see [provisioning](docs/provisioning.md). Prefix
+any script with `CHECK=1` for a full dry-run (changes nothing).
+
+**New here? Follow the [full guide](docs/guide.md)** — the complete end-to-end
+walkthrough from a fresh box to sealed, verified, and tooled.
 
 ## The scripts
 
@@ -70,12 +76,14 @@ go-live flow — including sealing the firewall *over Tailscale* — is in
 
 ## Docs
 
-Full guide and "who starts where" index: [`docs/`](docs/README.md).
+Start with the **[full guide](docs/guide.md)** for the end-to-end walkthrough, or
+the [docs index](docs/README.md) for the "who starts where" map.
 
+- [Full guide — fresh box to sealed & tooled](docs/guide.md)
 - [Security model & what gets hardened](docs/security-model.md)
 - [Configuration reference (`config.env`)](docs/configuration.md)
-- [Provisioning a Hetzner box](docs/provisioning.md)
-- [Running remotely / go-live flow](docs/running-remotely.md)
+- [Provisioning a Hetzner box (optional helper)](docs/provisioning.md)
+- [Running remotely — SSH mechanics & gotchas](docs/running-remotely.md)
 - [Dev tooling layer](docs/tooling.md)
 - [Cleanup](docs/cleanup.md)
 - [Troubleshooting & recovery](docs/troubleshooting.md)
