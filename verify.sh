@@ -20,6 +20,7 @@ TARGET_USER="${TARGET_USER:-deploy}"
 ALLOW_PUBLIC_SSH="${ALLOW_PUBLIC_SSH:-false}"
 LOCK_ROOT_PASSWORD="${LOCK_ROOT_PASSWORD:-true}"
 INSTALL_AUDIT="${INSTALL_AUDIT:-false}"
+ALLOW_SSH_FORWARDING="${ALLOW_SSH_FORWARDING:-false}"
 
 [[ $EUID -eq 0 ]] || echo "WARNING: not running as root — firewall/sshd checks may be incomplete." >&2
 
@@ -37,7 +38,8 @@ chk "root login disabled"                     "sshd -T 2>/dev/null | grep -qx 'p
 chk "password auth disabled"                  "sshd -T 2>/dev/null | grep -qx 'passwordauthentication no'"
 chk "pubkey auth enabled"                     "sshd -T 2>/dev/null | grep -qx 'pubkeyauthentication yes'"
 chk "MaxAuthTries = 3"                         "sshd -T 2>/dev/null | grep -qx 'maxauthtries 3'"
-chk "TCP forwarding disabled"                 "sshd -T 2>/dev/null | grep -qx 'allowtcpforwarding no'"
+fwd=no; [[ "$ALLOW_SSH_FORWARDING" == "true" ]] && fwd=yes   # matches setup.sh's config
+chk "TCP forwarding = $fwd (ALLOW_SSH_FORWARDING)" "sshd -T 2>/dev/null | grep -qx 'allowtcpforwarding $fwd'"
 chk "access limited to sudo group"            "sshd -T 2>/dev/null | grep -qix 'allowgroups sudo'"
 chk "keyboard-interactive auth disabled"      "sshd -T 2>/dev/null | grep -qx 'kbdinteractiveauthentication no'"
 chk "publickey-only auth methods"             "sshd -T 2>/dev/null | grep -qx 'authenticationmethods publickey'"
