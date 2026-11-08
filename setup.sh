@@ -60,7 +60,8 @@ log()  { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$C_G" "$C_0" "$*"; }
 warn() { printf '%s warn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
 die()  { printf '%serror%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
-changed() { printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
+# Silent under CHECK=1: a dry run changes nothing, so it must not report changes.
+changed() { [[ "${CHECK:-0}" == "1" ]] || printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
 would() { printf '%s   ?%s would: %s\n' "$C_Y" "$C_0" "$*"; }
 
 # run a mutating command, or just describe it under CHECK=1
@@ -138,7 +139,8 @@ step_preflight() {
   [[ $EUID -eq 0 ]] || die "must run as root (use sudo)."
   [[ -r /etc/os-release ]] || die "cannot read /etc/os-release"
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *debian* ]] \
+  # Debian itself (and Raspberry Pi OS) sets ID=debian with no ID_LIKE.
+  [[ "${ID:-}" == "ubuntu" || "${ID:-}" == "debian" || "${ID_LIKE:-}" == *debian* ]] \
     || die "this script targets Ubuntu/Debian (found ID=$ID)."
   ok "OS: ${PRETTY_NAME:-$ID} ($(uname -m))"
   command -v systemctl >/dev/null || die "systemd required."
@@ -290,6 +292,10 @@ step_tailscale() {
   if [[ -z "$TS_AUTHKEY" ]]; then
     if [[ "$ALLOW_PUBLIC_SSH" == "true" ]]; then
       warn "no TS_AUTHKEY and ALLOW_PUBLIC_SSH=true — skipping tailnet join."
+      return
+    fi
+    if [[ "$CHECK" == "1" ]]; then
+      warn "would stop here: Tailscale not connected and TS_AUTHKEY is empty. [dry-run continues]"
       return
     fi
     die "Tailscale not connected and TS_AUTHKEY is empty. Set TS_AUTHKEY in config.env \
@@ -545,10 +551,14 @@ step_firewall() {
   else
     # sudo strips SSH_CONNECTION without -E. Fall back to utmp (who am i shows
     # the login from-host), then to the peer of the established sshd socket.
-    sess_src="$(who am i 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p')"
-    [[ -z "$sess_src" ]] && sess_src="$(ss -tnH state established "( sport = :22 or sport = :$SSH_PORT )" 2>/dev/null \
-      | awk '{print $5}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//' \
-      | grep -vE '^(127\.|::1$)' | head -1)"
+    # `|| true` on both: with no SSH session (provider console, container) the
+    # pipelines match nothing, and under errexit+pipefail that silently killed the step.
+    sess_src="$(who am i 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p')" || true
+    if [[ -z "$sess_src" ]]; then
+      sess_src="$(ss -tnH state established "( sport = :22 or sport = :$SSH_PORT )" 2>/dev/null \
+        | awk '{print $5}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//' \
+        | grep -vE '^(127\.|::1$)' | head -1)" || true
+    fi
   fi
   # Tailscale CGNAT is 100.64.0.0/10 (100.64–100.127.x.x), or v6 fd7a:115c:a1e0::/48.
   if [[ -n "$sess_src" ]]; then
@@ -583,8 +593,10 @@ gate. If you are on a non-Tailscale link this may drop your session."
     else sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw; \
       grep -q '^IPV6=' /etc/default/ufw || echo 'IPV6=yes' >> /etc/default/ufw; \
       changed "enabled IPv6 in /etc/default/ufw"; fi
-  else
+  elif [[ -f /etc/default/ufw ]]; then
     ok "UFW IPv6 already enabled"
+  else
+    would "ensure IPV6=yes in /etc/default/ufw (ufw not installed yet)"
   fi
 
   # Base policy -----------------------------------------------------------
@@ -600,10 +612,23 @@ gate. If you are on a non-Tailscale link this may drop your session."
   if [[ "$ALLOW_PUBLIC_SSH" == "true" ]]; then
     do_run "ufw allow ${SSH_PORT}/tcp"
     warn "ALLOW_PUBLIC_SSH=true — SSH port ${SSH_PORT} is OPEN on the public interface."
-  else
-    # Ensure no stray public SSH rule lingers from a prior run
-    do_run "ufw --force delete allow ${SSH_PORT}/tcp 2>/dev/null || true"
   fi
+
+  # Remove every OTHER allow/limit rule (a provider image's `allow OpenSSH`, a
+  # LAN-subnet allow, an old port...). Otherwise "sealed" only means "sealed plus
+  # whatever was there before". `ufw show added` lists user rules even while ufw
+  # is inactive, as the commands that created them; delete each with `ufw delete`.
+  # The tailscale0 allow above is kept, so this can't cut the access path.
+  local rule spec
+  while IFS= read -r rule; do
+    spec="${rule#ufw }"
+    spec="${spec% comment *}"            # ufw matches the rule without its comment
+    [[ "$spec" == "allow in on tailscale0" ]] && continue
+    if [[ "$ALLOW_PUBLIC_SSH" == "true" && "$spec" == "allow ${SSH_PORT}/tcp" ]]; then continue; fi
+    # shellcheck disable=SC2086  # spec is a ufw rule; word-splitting is intended
+    if [[ "$CHECK" == "1" ]]; then would "ufw delete $spec (stray rule — not on tailscale0)"
+    else ufw --force delete $spec >/dev/null && changed "removed stray rule: $spec"; fi
+  done < <(command -v ufw >/dev/null && ufw show added 2>/dev/null | grep -E '^ufw (allow|limit) ' || true)
 
   do_run "ufw --force enable"
   [[ "$CHECK" == "1" ]] || { log "ufw status:"; ufw status verbose; }
@@ -617,7 +642,7 @@ gate. If you are on a non-Tailscale link this may drop your session."
 # Must never influence exit status.
 emit_next_step() {
   local sealed="$1" ip
-  ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
+  ip="$(tailscale ip -4 2>/dev/null | head -1)" || true; ip="${ip:-<tailscale-ip>}"
   echo
   if [[ "$sealed" == "1" ]]; then
     log "Next — verify the sealed posture (run from a machine on the tailnet):"

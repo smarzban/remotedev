@@ -33,6 +33,11 @@ no open ports. Reachable only over Tailscale.
 - **Bash, idempotent, re-runnable.** Write files only when content differs; install packages only when missing.
 - **`CHECK=1` must stay a true full dry-run** — every mutating path guarded so a dry run changes nothing and exits 0 (even on a fresh box where the target user doesn't exist yet).
 - **Lint before commit:** `bash -n` and `shellcheck -S warning` must be clean.
+- **Tests (CI runs them on every PR — `.github/workflows/ci.yml`):** `tests/dryrun.sh` asserts the
+  CHECK=1 contract (exit 0, no file changes) in fresh Ubuntu 24.04/22.04 + Debian 13 containers;
+  `tests/seal.sh` live-tests the firewall seal on a disposable host. Run locally with Docker:
+  `docker run --rm -v "$PWD":/t:ro ubuntu:24.04 bash -c 'apt-get update -qq && apt-get install -y -qq systemd passwd >/dev/null; bash /t/tests/dryrun.sh'`
+  and `docker run --rm --privileged -v "$PWD":/t:ro ubuntu:24.04 bash -c 'apt-get update -qq && apt-get install -y -qq ufw iptables iproute2 python3 >/dev/null; bash /t/tests/seal.sh'`.
 - **Match the existing style:** the `log/ok/warn/die/changed/would`, `do_run`, `write_file`, `apt_install` helpers; per-step functions `step_<name>`; sourced config without `set -a` (no secret export to children).
 - **Security core stays minimal & bootstrap-safe.** Heavy/dev things (full `dist-upgrade`, Docker, language runtimes) go in `tooling.sh`, never `setup.sh`.
 - **Secrets never committed.** `config.env` is git-ignored; auth keys passed via a 0600 tmpfs file, never argv.
@@ -54,6 +59,13 @@ no open ports. Reachable only over Tailscale.
 - **Running steps over SSH (proven on a 2nd box):** `sudo` over `ssh` needs a TTY — use `ssh -t` or you get *"sudo: a terminal is required"*. Scripts copied as root sit in `/root`, so when you seal/verify/tool as the sudo user, call them by absolute path (`sudo bash /root/<script>`). And keep the remote command on **one line** — a newline inside the quotes turns `&& sudo bash /root/verify.sh` into a bare `sudo bash` (an interactive root shell) and the rest never runs.
 - **Self-guiding next-step output:** each script prints the *single* next command on success (provision → `setup.sh bootstrap` → seal → `verify.sh` → `tooling.sh` → `cleanup.sh`), pre-filled with the box's Tailscale IP where it knows it. `setup.sh bootstrap` is an alias = all steps except `firewall`. Keep these emitters out of the exit-status path (they run after `log done`, guarded by `CHECK`). Don't reintroduce a single up-front wall-of-runbook dump.
 - **Recycled-IP host keys:** Hetzner reuses public IPs, so a deleted box's key lingers pinned in local `known_hosts` and trips "REMOTE HOST IDENTIFICATION HAS CHANGED" on the next box. `provision-hetzner.sh` clears the stale entry **only when it just created the box** (`CREATED=1`), never for a pre-existing one. Manual fix for the already-exists case: `ssh-keygen -R <ip>`.
+- **`firewall` removes every allow/limit rule that isn't on `tailscale0`** (parsed from `ufw show
+  added`, which works while ufw is inactive), and `verify.sh` fails on any such rule. Before this, a
+  provider image's `allow 22`/`OpenSSH` or a LAN-subnet allow survived the "seal" and verify passed.
+- **`pipefail` + a pipeline that can legitimately match nothing = silent exit.** `who am i | sed`,
+  `ss | grep`, `tailscale ip | head`, `getent | cut` all killed scripts on a console session / fresh
+  box / box without Tailscale. Any such assignment needs `|| true`. Plain Debian has `ID=debian` and
+  no `ID_LIKE` — preflight must accept it explicitly.
 - **Docker bypasses UFW** (its iptables rules sit ahead of UFW's), so a published port would break the seal. `tooling.sh` pins `daemon.json` `"ip": "127.0.0.1"`; `verify.sh` fails on wildcard-published container ports. Don't remove either.
 - **Tailscale key must be tagged and NOT ephemeral.** Ephemeral nodes are deleted when offline and untagged node keys expire (~180d) — both are delayed lockouts of a sealed box. `setup.sh` warns, `verify.sh` fails on key expiry.
 - **The SSH alias is a standalone LOCAL script (`ssh-alias.sh`), run on the operator's machine — never on the box.** An `~/.ssh/config` alias is a local artifact; `setup.sh`/`cleanup.sh` run *on the box* and can't touch the operator's machine. `ssh-alias.sh` resolves the box's Tailscale IP locally via `tailscale ip -4 <name>` (the Mac's own tailnet view — no SSH into the box, no MagicDNS dependency) and writes a marker-delimited managed block (idempotent). It's optional/opt-in (just run it), so there's deliberately **no config flag**; `cleanup.sh` prints a one-line reminder to run it. It is NOT scp'd to the box and NOT in `cleanup.sh`'s remove-list.

@@ -30,7 +30,7 @@ you copy-paste your way through the flow.
 ## Requirements
 
 - A target VPS running **Ubuntu 24.04** (22.04 also works; 24.04 gives a Python 3.12
-  baseline). Other distros are out of scope.
+  baseline). **Debian 13** also works (CI dry-runs all three). Other distros are out of scope.
 - A **Tailscale** account and an auth key — use a **single-use, tagged, non-ephemeral**
   key ([generate one](https://login.tailscale.com/admin/settings/keys)).
 - An **SSH keypair** — the public key is authorized on the box; password SSH is

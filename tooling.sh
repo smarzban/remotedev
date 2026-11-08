@@ -53,7 +53,8 @@ log()  { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$C_G" "$C_0" "$*"; }
 warn() { printf '%s warn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
 die()  { printf '%serror%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
-changed() { printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
+# Silent under CHECK=1: a dry run changes nothing, so it must not report changes.
+changed() { [[ "${CHECK:-0}" == "1" ]] || printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
 would() { printf '%s   ?%s would: %s\n' "$C_Y" "$C_0" "$*"; }
 
 # run a mutating command, or just describe it under CHECK=1
@@ -77,11 +78,13 @@ as_user() {
 
 # These steps operate on TARGET_USER's account — it must already exist.
 require_user() {
-  id "$TARGET_USER" &>/dev/null \
-    || die "user '$TARGET_USER' does not exist. Run setup.sh first: 'sudo ./setup.sh user'."
+  id "$TARGET_USER" &>/dev/null && return 0
+  # Dry runs must exit 0 even on a fresh box (the CHECK=1 contract).
+  if [[ "$CHECK" == "1" ]]; then warn "user '$TARGET_USER' does not exist yet (setup.sh creates it). [dry-run continues]"; return 0; fi
+  die "user '$TARGET_USER' does not exist. Run setup.sh first: 'sudo ./setup.sh user'."
 }
 
-user_home() { getent passwd "$TARGET_USER" | cut -d: -f6; }
+user_home() { getent passwd "$TARGET_USER" | cut -d: -f6 || true; }  # empty if absent (dry run on a fresh box)
 
 # Append $1 (a fixed line) to a TARGET_USER-owned rc file $2 if not already present.
 add_user_line() {
@@ -317,7 +320,7 @@ main() {
   [[ ${#steps[@]} -eq 0 ]] && steps=("${ALL_STEPS[@]}")
   [[ "$CHECK" == "1" ]] && warn "CHECK=1 dry-run — no changes will be made."
   # Tailscale IP of this box, for the copy-pasteable next-step hints below.
-  local ip; ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
+  local ip; ip="$(tailscale ip -4 2>/dev/null | head -1)" || true; ip="${ip:-<tailscale-ip>}"
   local i n="${#steps[@]}"
   for ((i = 0; i < n; i++)); do
     local s="${steps[$i]}"
