@@ -60,8 +60,10 @@ Mac (PATH or the `Tailscale.app` bundle).
 The `firewall` step runs **last** (anti-lockout), so between bootstrap and seal a
 hardened-but-public sshd is briefly reachable on `SSH_PORT`. Keep a provider
 security group / cloud firewall in front of the box during bootstrap; re-running
-converges and the seal removes any stray public rules. Use an **ephemeral,
-single-use** Tailscale auth key so a captured key is already spent.
+converges and the seal removes any stray public rules. `provision-hetzner.sh` does this
+for you (a Hetzner Cloud Firewall allowing SSH from your IP only). Use a
+**single-use, tagged, non-ephemeral** Tailscale auth key: a captured key is
+already spent, and the tag disables node-key expiry (no delayed lockout).
 
 ## Secrets on the box
 

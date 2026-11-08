@@ -32,11 +32,15 @@ fi
 
 # --- settings (config.env / env vars override these) -----------------------
 HCLOUD_SERVER_NAME="${HCLOUD_SERVER_NAME:-remotedev}"
-HCLOUD_SERVER_TYPE="${HCLOUD_SERVER_TYPE:-cx33}"      # ARM cax* if available; else cx*/cpx*
+HCLOUD_SERVER_TYPE="${HCLOUD_SERVER_TYPE:-cx23}"      # ARM cax* if available; else cx*/cpx*
 HCLOUD_LOCATION="${HCLOUD_LOCATION:-hel1}"
 HCLOUD_IMAGE="${HCLOUD_IMAGE:-ubuntu-24.04}"          # 24.04 => Python 3.12 baseline
 HCLOUD_SSH_KEY="${HCLOUD_SSH_KEY:-}"                  # name of a key already in your hcloud account
 COPY_TOOLKIT="${COPY_TOOLKIT:-false}"                 # also scp the toolkit + config.env to the box
+# Hetzner Cloud Firewall (provider-level, in front of the box): during bootstrap
+# only HCLOUD_FW_SOURCE may reach SSH. "auto" = this machine's public IPv4.
+HCLOUD_FIREWALL="${HCLOUD_FIREWALL:-true}"
+HCLOUD_FW_SOURCE="${HCLOUD_FW_SOURCE:-auto}"
 # Used only to print the next-step hint (from config.env if present):
 TARGET_USER="${TARGET_USER:-deploy}"
 SSH_PORT="${SSH_PORT:-2202}"
@@ -63,13 +67,50 @@ log "Hetzner provision plan:"
 printf '    name=%s  type=%s  image=%s  location=%s  ssh-key=%s\n' \
   "$HCLOUD_SERVER_NAME" "$HCLOUD_SERVER_TYPE" "$HCLOUD_IMAGE" "$HCLOUD_LOCATION" "$HCLOUD_SSH_KEY"
 
+# --- provider firewall (idempotent) ----------------------------------------
+# Closes the bootstrap window: until the UFW seal, sshd is key-only but public.
+# This firewall lets ONLY the operator's IP reach :22/:SSH_PORT. Tailscale needs
+# no inbound rule (it dials out; the firewall is stateful).
+FW_NAME="${HCLOUD_SERVER_NAME}-fw"
+FW_ARGS=""
+if [[ "$HCLOUD_FIREWALL" == "true" ]]; then
+  src="$HCLOUD_FW_SOURCE"
+  if [[ "$src" == "auto" ]]; then
+    if src="$(curl -fsS -4 --max-time 10 https://api.ipify.org 2>/dev/null)" && [[ -n "$src" ]]; then
+      src="$src/32"
+    elif [[ "$CHECK" == "1" ]]; then
+      warn "could not detect your public IPv4 (dry run continues)."; src="<your-ip>/32"
+    else
+      die "could not detect your public IPv4 for the firewall. Set HCLOUD_FW_SOURCE=<ip>/32 (or HCLOUD_FIREWALL=false)."
+    fi
+  fi
+  [[ "$src" == */* ]] || src="$src/32"
+  rules_json="$(printf '[{"direction":"in","protocol":"tcp","port":"22","source_ips":["%s"],"description":"bootstrap ssh"},{"direction":"in","protocol":"tcp","port":"%s","source_ips":["%s"],"description":"bootstrap ssh (hardened port)"}]' \
+    "$src" "$SSH_PORT" "$src")"
+  if [[ "$CHECK" == "1" ]]; then
+    would "create-or-update firewall '$FW_NAME': SSH (22, $SSH_PORT) from $src only"
+  else
+    rules="$(mktemp)"; trap 'rm -f "$rules"' EXIT
+    printf '%s\n' "$rules_json" > "$rules"
+    if hcloud firewall describe "$FW_NAME" >/dev/null 2>&1; then
+      # Re-sync every run: your IP or SSH_PORT may have changed since it was made.
+      hcloud firewall replace-rules "$FW_NAME" --rules-file "$rules" >/dev/null
+      ok "firewall '$FW_NAME' rules synced (SSH from $src only)"
+    else
+      hcloud firewall create --name "$FW_NAME" --rules-file "$rules" --label project=remotedev >/dev/null
+      changed "created firewall '$FW_NAME' (SSH from $src only)"
+    fi
+  fi
+  FW_ARGS="--firewall '$FW_NAME'"
+fi
+
 # --- create (idempotent) ---------------------------------------------------
 CREATED=0
 if hcloud server describe "$HCLOUD_SERVER_NAME" >/dev/null 2>&1; then
   ok "server '$HCLOUD_SERVER_NAME' already exists — not recreating."
 else
   do_run "hcloud server create --name '$HCLOUD_SERVER_NAME' --type '$HCLOUD_SERVER_TYPE' \
---image '$HCLOUD_IMAGE' --location '$HCLOUD_LOCATION' --ssh-key '$HCLOUD_SSH_KEY' --label project=remotedev"
+--image '$HCLOUD_IMAGE' --location '$HCLOUD_LOCATION' --ssh-key '$HCLOUD_SSH_KEY' --label project=remotedev $FW_ARGS"
   CREATED=1
   [[ "$CHECK" == "1" ]] || changed "created server '$HCLOUD_SERVER_NAME'"
 fi
@@ -132,3 +173,8 @@ else
 fi
 echo
 echo "(Each script prints the next command when it finishes — just follow along: seal → verify → tooling → cleanup.)"
+if [[ "$HCLOUD_FIREWALL" == "true" ]]; then
+  echo
+  echo "After the seal, drop the bootstrap SSH rules so the provider firewall is deny-all too:"
+  echo "    hcloud firewall replace-rules '$FW_NAME' --rules-file <(echo '[]')"
+fi

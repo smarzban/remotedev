@@ -48,6 +48,8 @@ ALLOW_SSH_FORWARDING="${ALLOW_SSH_FORWARDING:-false}"
 LOCK_ROOT_PASSWORD="${LOCK_ROOT_PASSWORD:-true}"
 INSTALL_AUDIT="${INSTALL_AUDIT:-false}"
 SSH_AUTHORIZED_KEYS="${SSH_AUTHORIZED_KEYS:-}"
+AUTO_REBOOT="${AUTO_REBOOT:-true}"
+AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-04:00}"
 
 ALL_STEPS=(preflight user tailscale ssh fail2ban autoupgrades apparmor sysctl journald audit firewall)
 
@@ -88,6 +90,36 @@ has_ssh_key() {
   id "$TARGET_USER" &>/dev/null || return 1
   local home; home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
   [[ -s "$home/.ssh/authorized_keys" ]]
+}
+
+# Blank a secret in config.env once it has been consumed, so it doesn't linger
+# on disk until cleanup.sh. Honors CHECK. No-op if the file/key is absent.
+scrub_config_var() {
+  local var="$1"
+  [[ -f "$CONFIG_FILE" ]] && grep -q "^${var}=..*" "$CONFIG_FILE" || return 0
+  grep -q "^${var}=\"\"$" "$CONFIG_FILE" && return 0
+  if [[ "$CHECK" == "1" ]]; then would "blank $var in $CONFIG_FILE"; return 0; fi
+  sed -i "s/^${var}=.*/${var}=\"\"/" "$CONFIG_FILE"
+  changed "blanked consumed $var in $CONFIG_FILE"
+}
+
+# Warn about Tailscale settings that would lock a sealed box out later:
+# node-key expiry (untagged keys expire ~180d) and ephemeral nodes (deleted
+# after going offline). Read-only; never fails the run.
+ts_lockout_warnings() {
+  command -v python3 >/dev/null || return 0
+  local out
+  out="$(tailscale status --json 2>/dev/null | python3 -c '
+import json, sys
+try: s = json.load(sys.stdin).get("Self", {})
+except Exception: sys.exit(0)
+if s.get("KeyExpiry"): print("expiry:" + s["KeyExpiry"])
+if not s.get("Tags"): print("untagged")
+' 2>/dev/null)" || true
+  [[ "$out" == *expiry:* ]] && warn "Tailscale node key EXPIRES (${out#*expiry:}) — a sealed box becomes unreachable then. \
+Use a TAGGED auth key (disables expiry) or disable key expiry for this machine in the admin console."
+  [[ "$out" == *untagged* ]] && warn "node is untagged — tag it (e.g. tag:remotedev) so a tailnet ACL can restrict who reaches it. See docs/security-model.md."
+  return 0
 }
 
 apt_install() {
@@ -176,6 +208,8 @@ Set SUDO_PASSWORD in config.env (it's git-ignored) and re-run."
     unset pw
     changed "set password for '$TARGET_USER'"
   fi
+  # Consumed — don't leave the plaintext password sitting in config.env.
+  scrub_config_var SUDO_PASSWORD
 
   # Authorized keys
   local home akf
@@ -222,8 +256,22 @@ the 'ssh' step will refuse to disable password auth to avoid lockout."
 # =============================================================================
 step_tailscale() {
   if ! command -v tailscale &>/dev/null; then
-    if [[ "$CHECK" == "1" ]]; then would "install tailscale via pkgs.tailscale.com";
-    else log "installing Tailscale"; curl -fsSL https://tailscale.com/install.sh | sh; fi
+    # Signed apt repo (same pattern as docker/node in tooling.sh), not curl|sh.
+    local os_id codename
+    os_id="$(. /etc/os-release && echo "${ID:-ubuntu}")"
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+    [[ -n "$codename" ]] || die "could not determine VERSION_CODENAME for the Tailscale repo."
+    local kr=/usr/share/keyrings/tailscale-archive-keyring.gpg
+    if [[ "$CHECK" == "1" ]]; then would "add pkgs.tailscale.com signed apt repo ($os_id $codename) + apt-get install tailscale"
+    else
+      log "installing Tailscale from its signed apt repo"
+      curl -fsSL "https://pkgs.tailscale.com/stable/$os_id/$codename.noarmor.gpg" -o "$kr"
+      chmod a+r "$kr"
+      printf 'deb [signed-by=%s] https://pkgs.tailscale.com/stable/%s %s main\n' "$kr" "$os_id" "$codename" \
+        > /etc/apt/sources.list.d/tailscale.list
+      apt-get update -q
+      apt_install tailscale
+    fi
   else ok "tailscale installed ($(tailscale version 2>/dev/null | head -1))"; fi
 
   do_run "systemctl enable --now tailscaled"
@@ -235,6 +283,8 @@ step_tailscale() {
     # Reconcile posture drift (no re-auth needed): no exit node, no advertised
     # routes, and Tailscale SSH OFF (it would be an auth path bypassing sshd).
     do_run "tailscale set --advertise-exit-node=false --advertise-routes= --ssh=false --accept-routes=false"
+    scrub_config_var TS_AUTHKEY
+    ts_lockout_warnings
     return
   fi
   if [[ -z "$TS_AUTHKEY" ]]; then
@@ -262,6 +312,8 @@ step_tailscale() {
   tailscale up --authkey="file:$keyfile" "${up_args[@]}"
   unset TS_AUTHKEY
   ok "joined tailnet ($(tailscale ip -4 2>/dev/null | head -1))"
+  scrub_config_var TS_AUTHKEY
+  ts_lockout_warnings
 }
 
 # =============================================================================
@@ -285,6 +337,10 @@ PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
+AuthenticationMethods publickey
+KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
 MaxAuthTries 3
 UsePAM yes
 X11Forwarding no
@@ -376,6 +432,12 @@ APT::Periodic::Unattended-Upgrade "1";' 0644 || true
         "${distro_id}ESM:${distro_codename}-infra-security";
 };
 Unattended-Upgrade::DevRelease "auto";' 0644 || true
+  # Without a reboot, patched kernels/libc install but never run.
+  local reboot="false"; [[ "$AUTO_REBOOT" == "true" ]] && reboot="true"
+  write_file /etc/apt/apt.conf.d/53remotedev-reboot \
+"Unattended-Upgrade::Automatic-Reboot \"${reboot}\";
+Unattended-Upgrade::Automatic-Reboot-WithUsers \"true\";
+Unattended-Upgrade::Automatic-Reboot-Time \"${AUTO_REBOOT_TIME}\";" 0644 || true
   do_run "systemctl enable --now unattended-upgrades"
   ok "unattended-upgrades enabled"
 }

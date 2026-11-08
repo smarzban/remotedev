@@ -23,8 +23,8 @@ You need:
 
 - **A target VPS** running **Ubuntu 24.04** (22.04 works too; 24.04 gives a Python
   3.12 baseline) that you can `ssh root@<host>` into. Any provider.
-- **A Tailscale account** and an auth key — generate an **ephemeral, single-use,
-  tagged** key at <https://login.tailscale.com/admin/settings/keys>.
+- **A Tailscale account** and an auth key — generate an **single-use, tagged,
+  non-ephemeral** key at <https://login.tailscale.com/admin/settings/keys>.
 - **Your SSH public key** — it gets authorized on the box; password SSH is disabled.
 - The toolkit itself, on your local machine (this repo).
 
