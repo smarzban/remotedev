@@ -31,7 +31,8 @@ else C_G=; C_Y=; C_B=; C_0=; fi
 log()  { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$C_G" "$C_0" "$*"; }
 warn() { printf '%s warn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
-changed() { printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
+# Silent under CHECK=1: a dry run changes nothing, so it must not report changes.
+changed() { [[ "${CHECK:-0}" == "1" ]] || printf '%s   ~%s %s\n' "$C_Y" "$C_0" "$*"; }
 would() { printf '%s   ?%s would: %s\n' "$C_Y" "$C_0" "$*"; }
 
 # Files holding secrets — overwrite (shred) before unlinking.

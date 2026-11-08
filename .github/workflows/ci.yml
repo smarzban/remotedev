@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: for f in *.sh tests/*.sh; do bash -n "$f"; done
+      - name: shellcheck
+        run: shellcheck -S warning *.sh tests/*.sh
+
+  dryrun:
+    # CHECK=1 must exit 0 and change nothing on a fresh box, on every supported OS.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:22.04", "debian:trixie"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: minimal fresh-box packages
+        run: apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q systemd passwd
+      - run: bash tests/dryrun.sh
+
+  seal:
+    # Live firewall test on the disposable runner VM (enables ufw; outbound unaffected).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ufw
+      - run: sudo bash tests/seal.sh

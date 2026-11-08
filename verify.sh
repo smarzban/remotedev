@@ -20,6 +20,7 @@ TARGET_USER="${TARGET_USER:-deploy}"
 ALLOW_PUBLIC_SSH="${ALLOW_PUBLIC_SSH:-false}"
 LOCK_ROOT_PASSWORD="${LOCK_ROOT_PASSWORD:-true}"
 INSTALL_AUDIT="${INSTALL_AUDIT:-false}"
+ALLOW_SSH_FORWARDING="${ALLOW_SSH_FORWARDING:-false}"
 
 [[ $EUID -eq 0 ]] || echo "WARNING: not running as root — firewall/sshd checks may be incomplete." >&2
 
@@ -37,7 +38,8 @@ chk "root login disabled"                     "sshd -T 2>/dev/null | grep -qx 'p
 chk "password auth disabled"                  "sshd -T 2>/dev/null | grep -qx 'passwordauthentication no'"
 chk "pubkey auth enabled"                     "sshd -T 2>/dev/null | grep -qx 'pubkeyauthentication yes'"
 chk "MaxAuthTries = 3"                         "sshd -T 2>/dev/null | grep -qx 'maxauthtries 3'"
-chk "TCP forwarding disabled"                 "sshd -T 2>/dev/null | grep -qx 'allowtcpforwarding no'"
+fwd=no; [[ "$ALLOW_SSH_FORWARDING" == "true" ]] && fwd=yes   # matches setup.sh's config
+chk "TCP forwarding = $fwd (ALLOW_SSH_FORWARDING)" "sshd -T 2>/dev/null | grep -qx 'allowtcpforwarding $fwd'"
 chk "access limited to sudo group"            "sshd -T 2>/dev/null | grep -qix 'allowgroups sudo'"
 chk "keyboard-interactive auth disabled"      "sshd -T 2>/dev/null | grep -qx 'kbdinteractiveauthentication no'"
 chk "publickey-only auth methods"             "sshd -T 2>/dev/null | grep -qx 'authenticationmethods publickey'"
@@ -51,6 +53,11 @@ chk "default deny routed (FORWARD=DROP)"      "grep -q '^DEFAULT_FORWARD_POLICY=
 chk "IPv6 enabled in ufw"                     "grep -q '^IPV6=yes' /etc/default/ufw"
 chk "allow in on tailscale0 (v4)"             "ufw status 2>/dev/null | grep -Ei 'Anywhere +on tailscale0 +ALLOW'"
 chk "allow in on tailscale0 (v6)"             "ufw status 2>/dev/null | grep -Ei 'Anywhere \\(v6\\) on tailscale0 +ALLOW'"
+# Nothing else may be allowed in: any ALLOW/LIMIT rule not bound to tailscale0
+# (a leftover `22/tcp`, `OpenSSH`, a LAN subnet...) breaks the seal. The public SSH
+# port is exempt only when ALLOW_PUBLIC_SSH=true.
+pub_ssh_re='^$'; [[ "$ALLOW_PUBLIC_SSH" == "true" ]] && pub_ssh_re="^$SSH_PORT(/tcp)?( \\(v6\\))? "
+chk "no allow rules except tailscale0"        "! ufw status 2>/dev/null | grep -E ' (ALLOW|LIMIT)( IN)? ' | grep -v ' on tailscale0 ' | grep -Ev '$pub_ssh_re' | grep -q ."
 # The crown jewel: no PUBLIC allow rule for the SSH port (unless explicitly opted in).
 if [[ "$ALLOW_PUBLIC_SSH" == "true" ]]; then
   chk "public SSH allow present (opt-in)"     "ufw status 2>/dev/null | grep -Eq '^$SSH_PORT(/tcp)? +ALLOW'"
@@ -111,10 +118,17 @@ echo "Passed: $pass  Failed: $fail"
 
 # On a clean pass, print the single next command — install dev tooling.
 if [[ $fail -eq 0 ]]; then
-  ip="$(tailscale ip -4 2>/dev/null | head -1)"; ip="${ip:-<tailscale-ip>}"
+  ip="$(tailscale ip -4 2>/dev/null | head -1)" || true; ip="${ip:-<tailscale-ip>}"
   echo
-  echo "Next — install dev tooling (run from a machine on the tailnet):"
-  printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  # verify runs both before tooling (after the seal) and after it — point at the
+  # step that's actually next. Any tooling.sh tool present = tooling has run.
+  if command -v docker &>/dev/null || command -v node &>/dev/null || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+    echo "Next — scrub the toolkit + secrets off the box (run from a machine on the tailnet):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/cleanup.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  else
+    echo "Next — install dev tooling (run from a machine on the tailnet):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  fi
 fi
 
 [[ $fail -eq 0 ]]
