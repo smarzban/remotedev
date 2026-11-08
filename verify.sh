@@ -70,6 +70,7 @@ chk "node key expiry disabled (tagged node)"  "tailscale status --json 2>/dev/nu
 if command -v docker &>/dev/null; then
   echo "== Docker (bypasses UFW) =="
   chk "default publish ip is loopback"        "grep -Eq '\"ip\": *\"127\\.0\\.0\\.1\"' /etc/docker/daemon.json"
+  chk "new networks bind to loopback (Compose)" "grep -Eq 'host_binding_ipv4\": *\"127\\.0\\.0\\.1\"' /etc/docker/daemon.json"
   # Any container port published on a wildcard address is PUBLIC despite UFW.
   chk "no container ports published publicly" "! docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq '(0\\.0\\.0\\.0|\\[?::\\]?):[0-9]+->'"
 fi

@@ -76,19 +76,30 @@ FW_ARGS=""
 if [[ "$HCLOUD_FIREWALL" == "true" ]]; then
   src="$HCLOUD_FW_SOURCE"
   if [[ "$src" == "auto" ]]; then
-    src="$(curl -fsS -4 --max-time 10 https://api.ipify.org 2>/dev/null)" \
-      || die "could not detect your public IPv4 for the firewall. Set HCLOUD_FW_SOURCE=<ip>/32 (or HCLOUD_FIREWALL=false)."
-    src="$src/32"
+    if src="$(curl -fsS -4 --max-time 10 https://api.ipify.org 2>/dev/null)" && [[ -n "$src" ]]; then
+      src="$src/32"
+    elif [[ "$CHECK" == "1" ]]; then
+      warn "could not detect your public IPv4 (dry run continues)."; src="<your-ip>/32"
+    else
+      die "could not detect your public IPv4 for the firewall. Set HCLOUD_FW_SOURCE=<ip>/32 (or HCLOUD_FIREWALL=false)."
+    fi
   fi
   [[ "$src" == */* ]] || src="$src/32"
-  if hcloud firewall describe "$FW_NAME" >/dev/null 2>&1; then
-    ok "firewall '$FW_NAME' already exists — leaving rules as-is."
+  rules_json="$(printf '[{"direction":"in","protocol":"tcp","port":"22","source_ips":["%s"],"description":"bootstrap ssh"},{"direction":"in","protocol":"tcp","port":"%s","source_ips":["%s"],"description":"bootstrap ssh (hardened port)"}]' \
+    "$src" "$SSH_PORT" "$src")"
+  if [[ "$CHECK" == "1" ]]; then
+    would "create-or-update firewall '$FW_NAME': SSH (22, $SSH_PORT) from $src only"
   else
     rules="$(mktemp)"; trap 'rm -f "$rules"' EXIT
-    printf '[{"direction":"in","protocol":"tcp","port":"22","source_ips":["%s"],"description":"bootstrap ssh"},{"direction":"in","protocol":"tcp","port":"%s","source_ips":["%s"],"description":"bootstrap ssh (hardened port)"}]\n' \
-      "$src" "$SSH_PORT" "$src" > "$rules"
-    do_run "hcloud firewall create --name '$FW_NAME' --rules-file '$rules' --label project=remotedev >/dev/null"
-    [[ "$CHECK" == "1" ]] || changed "created firewall '$FW_NAME' (SSH from $src only)"
+    printf '%s\n' "$rules_json" > "$rules"
+    if hcloud firewall describe "$FW_NAME" >/dev/null 2>&1; then
+      # Re-sync every run: your IP or SSH_PORT may have changed since it was made.
+      hcloud firewall replace-rules "$FW_NAME" --rules-file "$rules" >/dev/null
+      ok "firewall '$FW_NAME' rules synced (SSH from $src only)"
+    else
+      hcloud firewall create --name "$FW_NAME" --rules-file "$rules" --label project=remotedev >/dev/null
+      changed "created firewall '$FW_NAME' (SSH from $src only)"
+    fi
   fi
   FW_ARGS="--firewall '$FW_NAME'"
 fi
