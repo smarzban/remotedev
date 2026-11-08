@@ -15,15 +15,15 @@ sudo ./tooling.sh docker uv      # only named steps
 | Step | Result |
 |---|---|
 | **upgrade** | Full `apt-get dist-upgrade` — the one thing `setup.sh` deliberately omits (it only does `update` + relies on unattended-upgrades for *security* patches). Warns if a reboot is required. |
-| **docker** | Docker CE from Docker's **signed apt repo** (not `curl\|sh`), service enabled, and `TARGET_USER` added to the `docker` group (so DevPod/IDEs can use the socket without sudo). |
+| **docker** | Docker CE from Docker's **signed apt repo** (not `curl\|sh`), service enabled, and `TARGET_USER` added to the `docker` group (so DevPod/IDEs can use the socket without sudo). Writes `/etc/docker/daemon.json` `"ip": "127.0.0.1"` so published ports default to loopback — Docker bypasses UFW, so a bare `-p 8080:80` would otherwise be public. |
 | **brew** | Homebrew (Linuxbrew), installed **as `TARGET_USER`** (the installer refuses root) and wired into their login shells. |
 | **uv** | Astral `uv`, installed **as `TARGET_USER`** into `~/.local/bin`. Use `uv python install <ver>` for pinned/extra Python versions. |
 | **python** | System Python base: `python3` + `venv` + `pip` + `dev` headers + `pipx` + `python-is-python3`. |
-| **node** | Node.js + `npm` from NodeSource's **signed apt repo** (same pattern as Docker). Major pinned by `NODE_MAJOR` (default `22`). |
+| **node** | Node.js + `npm` from NodeSource's **signed apt repo** (same pattern as Docker). Major pinned by `NODE_MAJOR` (default `24`). |
 
 Toggles (in [`config.env`](configuration.md)): `INSTALL_DOCKER`, `INSTALL_BREW`,
 `INSTALL_UV`, `INSTALL_PYTHON`, `INSTALL_NODE` (all default `true`; the `upgrade`
-step always runs). `NODE_MAJOR` selects the Node major (e.g. `22`, `24`).
+step always runs). `NODE_MAJOR` selects the Node major (e.g. `24`, `22`).
 
 > **Security note:** adding `TARGET_USER` to the `docker` group is effectively
 > root-equivalent on the host — an accepted trade-off for a single-user dev box.

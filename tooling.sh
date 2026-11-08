@@ -42,7 +42,7 @@ INSTALL_BREW="${INSTALL_BREW:-true}"
 INSTALL_UV="${INSTALL_UV:-true}"
 INSTALL_PYTHON="${INSTALL_PYTHON:-true}"
 INSTALL_NODE="${INSTALL_NODE:-true}"
-NODE_MAJOR="${NODE_MAJOR:-22}"           # Node major from NodeSource (e.g. 22 LTS, 24)
+NODE_MAJOR="${NODE_MAJOR:-24}"           # Node major from NodeSource (24 = current LTS)
 
 ALL_STEPS=(upgrade docker brew uv python node)
 
@@ -150,6 +150,28 @@ step_docker() {
     fi
     do_run "apt-get update -q"
     apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  fi
+
+  # Docker writes its own iptables rules AHEAD of UFW, so `-p 8080:80` would be
+  # reachable from the public internet and silently break the Tailscale-only
+  # seal. Default published ports to loopback; publish on the tailnet explicitly
+  # with `-p <tailscale-ip>:8080:80` when wanted.
+  local dj=/etc/docker/daemon.json want='{
+  "ip": "127.0.0.1"
+}'
+  if [[ -f "$dj" ]] && [[ "$(cat "$dj")" == "$want" ]]; then
+    ok "$dj already binds published ports to 127.0.0.1"
+  elif [[ -f "$dj" ]] && ! grep -q '"ip"' "$dj"; then
+    warn "$dj exists with custom content — add '\"ip\": \"127.0.0.1\"' manually (not overwriting)."
+  elif [[ -f "$dj" ]]; then
+    ok "$dj already sets a default bind ip"
+  elif [[ "$CHECK" == "1" ]]; then
+    would "write $dj (published ports default to 127.0.0.1)"
+  else
+    install -d -m 0755 /etc/docker
+    printf '%s\n' "$want" > "$dj"
+    changed "wrote $dj (published ports default to 127.0.0.1)"
+    systemctl is-active --quiet docker && systemctl restart docker
   fi
 
   do_run "systemctl enable --now docker"

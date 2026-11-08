@@ -69,7 +69,7 @@ Tailscale not connected and TS_AUTHKEY is empty …
 ```
 
 The `tailscale` step needs an auth key to join the tailnet. Set `TS_AUTHKEY` (an
-[ephemeral, single-use, tagged key](configuration.md)), or `ALLOW_PUBLIC_SSH=true`
+[single-use, tagged, non-ephemeral key](configuration.md)), or `ALLOW_PUBLIC_SSH=true`
 to skip the tailnet join.
 
 ```

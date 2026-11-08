@@ -12,10 +12,10 @@ public interface sees no open ports — the box is reachable only over Tailscale
 | Layer | Result |
 |---|---|
 | **Firewall (UFW)** | Default `deny incoming` / `allow outgoing` / `deny routed`. Inbound allowed **only on `tailscale0`** (v4 **and** v6) — the public internet sees no open ports. |
-| **Tailscale** | Installed and joined to the tailnet (TUN mode, no exit node / no advertised routes, Tailscale-SSH off). The primary + only access path. |
-| **SSH** | Hardened drop-in: custom port (default `2202`), root login off, **key-only** (no passwords), `MaxAuthTries 3`, kbd-interactive off, X11 off, TCP/agent/tunnel forwarding off, `AllowGroups sudo`, keepalive. Port-bind is asserted before the firewall seals. Runs **standalone, not socket-activated** (see anti-lockout). |
+| **Tailscale** | Installed and joined to the tailnet (TUN mode, no exit node / no advertised routes, Tailscale-SSH off), installed from Tailscale's **signed apt repo**. The primary + only access path. Warns if the node key expires or the node is untagged. |
+| **SSH** | Hardened drop-in: custom port (default `2202`), root login off, **key-only** (no passwords), `MaxAuthTries 3`, kbd-interactive off, X11 off, TCP/agent/tunnel forwarding off, `AllowGroups sudo`, `AuthenticationMethods publickey`, modern-only Kex/Ciphers/MACs (incl. post-quantum `sntrup761x25519`), keepalive. Port-bind is asserted before the firewall seals. Runs **standalone, not socket-activated** (see anti-lockout). |
 | **fail2ban** | `nftables` banaction, `systemd` backend, `sshd` jail on the custom port. (Largely inert in the default Tailscale-only posture — UFW drops public traffic before it reaches sshd; it matters mainly in the `ALLOW_PUBLIC_SSH=true` fallback.) |
-| **unattended-upgrades** | Auto security patching: release + `-security` + ESM apps + ESM infra origins. |
+| **unattended-upgrades** | Auto security patching: release + `-security` + ESM apps + ESM infra origins, with automatic reboot at `AUTO_REBOOT_TIME` so patched kernels actually run. |
 | **AppArmor** | Enabled. |
 | **Kernel / sysctl** | Hardening drop-in: `kptr_restrict`, `dmesg_restrict`, `ptrace_scope`, `rp_filter`, `tcp_syncookies`, no redirects/source-routing, martian logging. (Does not touch forwarding — Tailscale owns that.) |
 | **Logging** | Persistent journald (so fail2ban/audit history survives reboot). |
@@ -48,6 +48,39 @@ The whole point is to seal the box without ever locking yourself out. `setup.sh`
   sourced without `set -a` so they're never exported into child processes; the
   Tailscale auth key is passed via a `0600` tmpfs file (shredded after), never on
   the process command line.
+- **Consumed secrets are blanked** in `config.env` as soon as they're used
+  (`SUDO_PASSWORD` after it's set, `TS_AUTHKEY` after join), not only at
+  `cleanup.sh`. (`shred` is best-effort on SSD/journaled storage — blanking early
+  matters more.)
+
+## Restrict who on the tailnet can reach the box (ACL)
+
+UFW trusts **everything arriving on `tailscale0`**, so the tailnet ACL is the real
+access control. Tag the box (via a tagged auth key) and allow only your own devices,
+only on the ports you need. In the Tailscale admin console → *Access controls*:
+
+```jsonc
+{
+  "tagOwners": { "tag:remotedev": ["autogroup:admin"] },
+  "acls": [
+    // Only you (the tailnet admin's own devices) may reach the box, SSH only.
+    // Add dev ports (e.g. "tag:remotedev:3000") as needed.
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:remotedev:2202"] }
+  ]
+}
+```
+
+Replace `2202` with your `SSH_PORT`. Remove the default allow-all rule, or other
+tailnet devices (phones, shared nodes) can reach every port on the box.
+
+## Docker and the firewall
+
+Docker inserts its own iptables rules **ahead of UFW**, so a published port
+(`-p 8080:80`) is public even on a sealed box. `tooling.sh` writes
+`/etc/docker/daemon.json` with `"ip": "127.0.0.1"` so published ports default to
+loopback. To expose a container on the tailnet, publish it explicitly on the
+Tailscale IP: `-p <tailscale-ip>:8080:80`. `verify.sh` fails if any container port
+is published on a wildcard address.
 
 ## Notes vs. the reference posture
 

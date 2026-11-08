@@ -39,6 +39,8 @@ chk "pubkey auth enabled"                     "sshd -T 2>/dev/null | grep -qx 'p
 chk "MaxAuthTries = 3"                         "sshd -T 2>/dev/null | grep -qx 'maxauthtries 3'"
 chk "TCP forwarding disabled"                 "sshd -T 2>/dev/null | grep -qx 'allowtcpforwarding no'"
 chk "access limited to sudo group"            "sshd -T 2>/dev/null | grep -qix 'allowgroups sudo'"
+chk "keyboard-interactive auth disabled"      "sshd -T 2>/dev/null | grep -qx 'kbdinteractiveauthentication no'"
+chk "publickey-only auth methods"             "sshd -T 2>/dev/null | grep -qx 'authenticationmethods publickey'"
 
 echo "== Firewall (sealed posture) =="
 chk "ufw active"                              "ufw status 2>/dev/null | grep -qi 'Status: active'"
@@ -60,6 +62,17 @@ echo "== Tailscale =="
 chk "tailscaled active"                       "systemctl is-active --quiet tailscaled"
 chk "backend Running"                         "tailscale status --json 2>/dev/null | grep -q '\"BackendState\": *\"Running\"'"
 chk "not advertising as exit node"            "! tailscale status --json 2>/dev/null | grep -q '\"ExitNodeOption\": *true'"
+chk "Tailscale SSH disabled"                  "tailscale debug prefs 2>/dev/null | grep -q '\"RunSSH\": *false'"
+# A sealed box whose node key expires (untagged key) or that is ephemeral is a
+# delayed lockout. Tagged nodes have key expiry disabled.
+chk "node key expiry disabled (tagged node)"  "tailscale status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin)[\"Self\"]; sys.exit(1 if s.get(\"KeyExpiry\") else 0)'"
+
+if command -v docker &>/dev/null; then
+  echo "== Docker (bypasses UFW) =="
+  chk "default publish ip is loopback"        "grep -Eq '\"ip\": *\"127\\.0\\.0\\.1\"' /etc/docker/daemon.json"
+  # Any container port published on a wildcard address is PUBLIC despite UFW.
+  chk "no container ports published publicly" "! docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq '(0\\.0\\.0\\.0|\\[?::\\]?):[0-9]+->'"
+fi
 
 echo "== fail2ban =="
 chk "fail2ban active"                          "systemctl is-active --quiet fail2ban"
@@ -86,6 +99,11 @@ if [[ "$INSTALL_AUDIT" == "true" ]]; then
   chk "auditd active"                          "systemctl is-active --quiet auditd"
   chk "remotedev audit rules loaded"           "auditctl -l 2>/dev/null | grep -q identity"
 fi
+
+echo "== Info (not scored) =="
+[[ -f /var/run/reboot-required ]] && echo " WARN reboot pending — patched kernel/libs not running yet (sudo reboot)"
+echo " public-facing TCP listeners (blocked by UFW unless Docker-published):"
+ss -tlnH 2>/dev/null | awk '{print $4}' | grep -vE '^(127\.|\[::1\]|100\.|\[fd7a:)' | sort -u | sed 's/^/   /'
 
 echo
 echo "Passed: $pass  Failed: $fail"
