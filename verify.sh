@@ -120,8 +120,15 @@ echo "Passed: $pass  Failed: $fail"
 if [[ $fail -eq 0 ]]; then
   ip="$(tailscale ip -4 2>/dev/null | head -1)" || true; ip="${ip:-<tailscale-ip>}"
   echo
-  echo "Next — install dev tooling (run from a machine on the tailnet):"
-  printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  # verify runs both before tooling (after the seal) and after it — point at the
+  # step that's actually next. Any tooling.sh tool present = tooling has run.
+  if command -v docker &>/dev/null || command -v node &>/dev/null || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+    echo "Next — scrub the toolkit + secrets off the box (run from a machine on the tailnet):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/cleanup.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  else
+    echo "Next — install dev tooling (run from a machine on the tailnet):"
+    printf "    ssh -t %s@%s -p %s 'sudo bash /root/tooling.sh'\n" "$TARGET_USER" "$ip" "$SSH_PORT"
+  fi
 fi
 
 [[ $fail -eq 0 ]]
